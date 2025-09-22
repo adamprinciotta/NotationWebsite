@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gamepad → Combo Overlay (OBS‑ready)</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ===== OVERLAY (OBS captures this) ===== -->
+  <div id="overlayWrap"><div id="overlay" aria-live="polite"></div></div>
+  <div id="playline"><div class="bar"></div><div class="ticks"></div></div>
+
+
+  <!-- Practice Bar (shown only in Practice Mode) -->
+    <div id="practiceBar" style="display:none">
+    <div class="practice-inner">
+        <div class="left">
+        <label>Lead-in (ms)
+            <input id="leadInMs" type="number" value="1000" min="0" step="10">
+        </label>
+        <label>Latency (ms)
+            <input id="latencyMs" type="number" value="0" min="0" step="5">
+        </label>
+        <label>Fill lead-in (ms)
+            <input id="indicatorMs" type="number" value="2000" min="100" step="50">
+        </label>
+        </div>
+        <div class="right">
+        <button id="recBtnPractice"  class="btn">Record</button>
+        <button id="stopBtnPractice" class="btn">Stop</button>
+        <button id="playBtnPractice" class="btn primary">Play</button>
+        <button id="saveScriptBtnPractice" class="btn">Save</button>
+        <button id="loadScriptBtnPractice" class="btn">Load</button>
+        <input id="loadScriptInputPractice" type="file" accept="application/json" style="display:none">
+        </div>
+    </div>
+    </div>
+
+  <!-- ===== SETTINGS ===== -->
+  <div class="wrap">
+    <div class="col">
+      <div class="card">
+        <div class="row row-tight">
+          <select id="profileSelect"></select>
+          <button id="newProfile" class="btn">New</button>
+          <button id="dupProfile" class="btn">Duplicate</button>
+          <button id="delProfile" class="btn">Delete</button>
+          <button id="saveProfile" class="btn primary">Save</button>
+        </div>
+        <div class="row">
+          <input id="profileName" type="text" placeholder="Profile name"/>
+          <div class="tiny">E: toggle settings · C: clear overlay</div>
+        </div>
+        <div class="row row-tight">
+          <input id="importInput" type="file" accept="application/json" style="display:none" />
+          <button id="exportBtn" class="btn">Export</button>
+          <button id="importBtn" class="btn">Import</button>
+          <button id="makeObsUrl" class="btn">Copy OBS URL</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row row-tight">
+          <button id="clearBtn" class="btn">Clear now</button>
+          <!-- Reset Action (bind to a controller button) -->
+            <div class="row row-tight" id="resetActionRow"><button id="bindResetBtn" class="btn">Set Reset Button</button><button id="clearResetBtn" class="btn">Clear</button><span id="resetLabel" class="tiny">Reset: none</span></div>
+
+          <button id="copyBtn" class="btn">Copy text</button>
+          <button id="copyPngBtn" class="btn">Copy PNG</button>
+          <button id="exportPngBtn" class="btn">Export PNG</button>
+          <button id="toggleMode" class="btn primary">Mode: Live</button>
+          <button id="practiceToggle" class="btn">Practice Mode: Off (P)</button>
+        </div>
+
+        <!-- Playback/record controls -->
+        <div class="row grid-3">
+          <label>Playback style
+            <select id="playbackStyle">
+              <option value="sweep">A – Chip Sweep</option>
+              <option value="tick">B – Tick Cursor</option>
+            </select>
+          </label>
+          <label>Lead-in (ms) <input id="leadInMs" type="number" value="600"></label>
+          <label>Latency (ms) <input id="latencyMs" type="number" value="0"></label>
+        </div>
+        <div class="row row-tight">
+          <button id="recBtn" class="btn">● Record</button>
+          <button id="stopBtn" class="btn">■ Stop</button>
+          <button id="playBtn" class="btn">▶ Play</button>
+          <label style="justify-self:end"><input id="loopChk" type="checkbox"> Loop</label>
+        </div>
+        <div class="row row-tight">
+          <button id="saveScriptBtn" class="btn">Save Script</button>
+          <button id="loadScriptBtn" class="btn">Load Script</button>
+          <input id="loadScriptInput" type="file" accept="application/json" style="display:none">
+        </div>
+
+        <div class="row grid-2">
+          <label>Chord window (ms)<input id="chordWindow" type="number" value="80"></label>
+          <label>Repeat lockout (ms)<input id="repeatLockout" type="number" value="110"></label>
+        </div>
+        <div class="row grid-2"><label>Hold threshold (ms) → [L]<input id="holdMs" type="number" value="250"></label><label>Deadzone<input id="deadzone" type="number" step="0.01" min="0" max="0.99" value="0.5"></label></div>
+        <div class="row grid-2"><label>Motion window (ms)<input id="motionWindow" type="number" value="700"></label><label>Motion→Button couple (ms)<input id="motionCoupleMs" type="number" value="130"></label></div>
+        <div class="row grid-2"><label>Charge frames (60fps)<input id="chargeFrames" type="number" value="30"></label><label>Charge→Opposite+Btn (ms)<input id="chargeWindow" type="number" value="180"></label></div>
+        <div class="row"><label>Fill lead-in (ms)<input id="indicatorMs" type="number" value="1000" min="100" step="50"></label><div class="tiny">How long the button-fill animation takes before a hit.</div>
+        </div>
+    </div>
+
+      <div class="card">
+        <h4 class="h4">Overlay Size & Colors</h4>
+        <div class="row grid-2"><label>Chip font (px)<input id="chipFont" type="number" value="18"></label><label>Icon height (px)<input id="chipImgH" type="number" value="20"></label></div>
+        <div class="row grid-2"><label>Chip pad X<input id="chipPadX" type="number" value="12"></label><label>Chip pad Y<input id="chipPadY" type="number" value="6"></label></div>
+        <div class="row grid-2"><label>Chip gap<input id="chipGap" type="number" value="10"></label><label>Chip radius<input id="chipRadius" type="number" value="999"></label></div>
+        <div class="row grid-2"><label>Overlay width (px)<input id="overlayWidth" type="number" value="800"></label><label class="full"><input id="overlayFullWidth" type="checkbox" checked>Use window width (full-width)</label></div>
+        <div class="row grid-2"><label>Global chip background<input id="chipBgAll" type="color" value="#f5f5f5"></label><label>Global chip text<input id="chipTextAll" type="color" value="#000000"></label></div>
+        <div class="row"><label class="full"><input id="useGlobalColors" type="checkbox" checked> Force all chips to use the global colors above</label></div>
+      </div>
+    </div>
+        
+    
+
+
+    <div class="col">
+      <div class="card">
+        <h4 class="h4">Buttons (label, text color, chip bg)</h4>
+        <table id="buttonMapTable"></table>
+      </div>
+      <div class="card"><div id="status" class="tiny">No gamepad detected. Press any button. Drag & drop a JSON to import. Click a chip to edit; Delete to remove; double‑click to capture with controller.</div></div>
+    </div>
+  </div>
+
+    <script src="app.core.js"></script>
+    <script src="app.recording.js"></script>
+</body>
+</html>

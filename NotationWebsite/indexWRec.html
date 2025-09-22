@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Gamepad → Combo Overlay (OBS-ready v13.3 · Capture, PNG, Recording & Playback)</title>
+<style>
+  :root{
+    --fg:#e7e7ea; --bg:transparent; --panel:#1b1e25; --panel-brd:#2a2f3a; --accent:#3a4cff; --muted:#9aa3b2;
+    --overlay-width:800px; --sep: ">";
+    --chip-font:18px; --chip-img-h:20px; --chip-pad-x:12px; --chip-pad-y:6px; --chip-gap:10px; --chip-radius:999px;
+    --chip-bg:#f5f5f5; --chip-brd:rgba(0,0,0,.25); --chip-text:#000000;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,"Noto Sans"}
+  *{box-sizing:border-box}
+
+  #overlayWrap{position:sticky;top:0;padding:10px 12px;background:linear-gradient(180deg, rgba(0,0,0,.35), rgba(0,0,0,0));backdrop-filter:saturate(1.2)}
+  #overlay{
+    position:relative; /* needed for tick cursor */
+    display:flex;flex-wrap:wrap;align-items:center;gap:var(--chip-gap);
+    background:rgba(18,18,22,.66);border:1px solid rgba(255,255,255,.08);
+    border-radius:14px;padding:8px 12px;min-height:48px;max-width:var(--overlay-width);overflow-x:auto
+  }
+  .chip{display:inline-flex;align-items:center;gap:6px;font-weight:800;font-size:var(--chip-font);line-height:1;padding:var(--chip-pad-y) var(--chip-pad-x);border-radius:var(--chip-radius);background:var(--chip-bg);border:1px solid var(--chip-brd);color:var(--chip-text);user-select:none;cursor:default;outline:none}
+  .chip:focus{box-shadow:0 0 0 2px rgba(58,76,255,.6)}
+  .chip.selected{box-shadow:0 0 0 2px #fff8;border-color:#fff}
+  .chip.capture{box-shadow:0 0 0 2px var(--accent), 0 0 14px rgba(58,76,255,.6);position:relative}
+  .chip.capture::after{content:"CAPTURE";position:absolute;top:-10px;right:-10px;background:var(--accent);color:#fff;font-size:10px;font-weight:900;padding:2px 6px;border-radius:999px}
+  @keyframes pulse{from{filter:saturate(1)}to{filter:saturate(1.6)}} .chip.capture{animation:pulse .9s ease-in-out infinite alternate}
+  .img{height:var(--chip-img-h);vertical-align:middle}
+  .sep{font-weight:900;opacity:.9;padding:0 6px;user-select:none}
+  .global-override .chip{background:var(--chip-bg)!important; color:var(--chip-text)!important}
+
+  /* Playback A: chip sweep fill */
+  .chip.playback-sweep{
+    background-image: linear-gradient(90deg, rgba(58,76,255,.28), rgba(58,76,255,.28));
+    background-repeat: no-repeat;
+    background-size: calc(var(--pct,0) * 100%) 100%;
+    transition: background-size 16ms linear;
+  }
+  .chip.hit{ box-shadow:0 0 0 2px rgba(58,76,255,.9); }
+  .chip.miss{ box-shadow:0 0 0 2px rgba(220,50,47,.9); }
+
+  /* Playback B: moving tick cursor */
+  .tick-cursor{
+    position:absolute; top:4px; bottom:4px; width:2px;
+    background:rgba(255,255,255,.9); border-radius:2px; pointer-events:none; z-index:5;
+    opacity:.9; transform:translateX(-50%);
+  }
+
+  .popover{position:fixed; z-index:10000; background:#151821; border:1px solid #2a2f3a; color:#e7ebf3;border-radius:10px; padding:8px; box-shadow:0 8px 26px rgba(0,0,0,.45); width:280px}
+  .popover h5{margin:0 0 6px;font-size:12px;color:#9aa3b2;font-weight:700;letter-spacing:.02em}
+  .popover .row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+  .popover .btn{appearance:none;border:1px solid #2a2f3a;border-radius:8px;padding:6px 10px;background:#30384b;color:#eef0f5;font-weight:700;cursor:pointer}
+  .popover .btn.danger{background:#5b1b2a;border-color:#7d2236}
+  .popover input[type="text"]{width:100%;padding:6px 8px;border-radius:8px;border:1px solid #2a2f3a;background:#262b36;color:#eef0f5}
+
+  .wrap{display:grid;grid-template-columns:1fr 440px;gap:12px;padding:8px 12px}
+  .col{display:grid;gap:12px;align-content:start;max-height:calc(100vh - 120px);overflow:auto}
+  .card{background:var(--panel);border:1px solid var(--panel-brd);border-radius:12px;padding:10px;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+  .row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+  .btn{appearance:none;border:1px solid var(--panel-brd);border-radius:10px;padding:8px 10px;cursor:pointer;font-weight:700;background:#2a3040;color:#eef0f5}
+  .btn.primary{background:var(--accent);border-color:transparent;color:white}
+  .btn.ghost{background:transparent}
+  select,input[type="number"],input[type="text"],input[type="color"]{width:100%;padding:6px 8px;border-radius:8px;border:1px solid var(--panel-brd);background:#262b36;color:#eef0f5;outline:none}
+  select option{background:#262b36;color:#eef0f5}
+  label{display:flex;align-items:center;gap:8px}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:6px 4px;border-bottom:1px dotted rgba(255,255,255,.12);font-size:13px;color:#e7ebf3}
+  .tiny{font-size:12px;color:var(--muted)}
+  body.obs .wrap{display:none}
+</style>
+</head>
+<body>
+  <!-- ===== OVERLAY (OBS captures this) ===== -->
+  <div id="overlayWrap"><div id="overlay" aria-live="polite"></div></div>
+
+  <!-- ===== SETTINGS ===== -->
+  <div class="wrap">
+    <div class="col">
+      <div class="card">
+        <div class="row" style="grid-template-columns:1fr auto auto auto auto;gap:6px">
+          <select id="profileSelect"></select>
+          <button id="newProfile" class="btn">New</button>
+          <button id="dupProfile" class="btn">Duplicate</button>
+          <button id="delProfile" class="btn">Delete</button>
+          <button id="saveProfile" class="btn primary">Save</button>
+        </div>
+        <div class="row">
+          <input id="profileName" type="text" placeholder="Profile name"/>
+          <div class="tiny">E: toggle settings · C: clear overlay</div>
+        </div>
+        <div class="row" style="grid-template-columns:1fr auto auto auto;gap:8px;margin-top:6px">
+          <input id="importInput" type="file" accept="application/json" style="display:none" />
+          <button id="exportBtn" class="btn">Export</button>
+          <button id="importBtn" class="btn">Import</button>
+          <button id="makeObsUrl" class="btn">Copy OBS URL</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="grid-template-columns:auto auto auto auto auto;gap:8px">
+          <button id="clearBtn" class="btn">Clear now</button>
+          <button id="copyBtn" class="btn">Copy text</button>
+          <button id="copyPngBtn" class="btn">Copy PNG</button>
+          <button id="exportPngBtn" class="btn">Export PNG</button>
+          <button id="toggleMode" class="btn primary">Mode: Live</button>
+        </div>
+
+        <!-- Playback/record controls -->
+        <div class="row" style="grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
+          <label>Playback style
+            <select id="playbackStyle">
+              <option value="sweep">A – Chip Sweep</option>
+              <option value="tick">B – Tick Cursor</option>
+            </select>
+          </label>
+          <label>Lead-in (ms) <input id="leadInMs" type="number" value="600"></label>
+          <label>Latency (ms) <input id="latencyMs" type="number" value="0"></label>
+        </div>
+        <div class="row" style="grid-template-columns:auto auto auto auto auto;gap:8px;margin-top:6px">
+          <button id="recBtn" class="btn">● Record</button>
+          <button id="stopBtn" class="btn">■ Stop</button>
+          <button id="playBtn" class="btn">▶ Play</button>
+          <label style="justify-self:end"><input id="loopChk" type="checkbox"> Loop</label>
+        </div>
+        <div class="row" style="grid-template-columns:auto auto 1fr;gap:8px;margin-top:6px">
+          <button id="saveScriptBtn" class="btn">Save Script</button>
+          <button id="loadScriptBtn" class="btn">Load Script</button>
+          <input id="loadScriptInput" type="file" accept="application/json" style="display:none">
+        </div>
+
+        <div class="row" style="grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+          <label>Chord window (ms)<input id="chordWindow" type="number" value="80"></label>
+          <label>Repeat lockout (ms)<input id="repeatLockout" type="number" value="110"></label>
+        </div>
+        <div class="row"><label>Hold threshold (ms) → [L]<input id="holdMs" type="number" value="250"></label><label>Deadzone<input id="deadzone" type="number" step="0.01" min="0" max="0.99" value="0.5"></label></div>
+        <div class="row"><label>Motion window (ms)<input id="motionWindow" type="number" value="700"></label><label>Motion→Button couple (ms)<input id="motionCoupleMs" type="number" value="130"></label></div>
+        <div class="row"><label>Charge frames (60fps)<input id="chargeFrames" type="number" value="30"></label><label>Charge→Opposite+Btn (ms)<input id="chargeWindow" type="number" value="180"></label></div>
+      </div>
+
+      <div class="card">
+        <h4 style="margin:0 0 6px">Overlay Size & Colors</h4>
+        <div class="row"><label>Chip font (px)<input id="chipFont" type="number" value="18"></label><label>Icon height (px)<input id="chipImgH" type="number" value="20"></label></div>
+        <div class="row"><label>Chip pad X<input id="chipPadX" type="number" value="12"></label><label>Chip pad Y<input id="chipPadY" type="number" value="6"></label></div>
+        <div class="row"><label>Chip gap<input id="chipGap" type="number" value="10"></label><label>Chip radius<input id="chipRadius" type="number" value="999"></label></div>
+        <div class="row"><label>Overlay width (px)<input id="overlayWidth" type="number" value="800"></label><label>Separator<input id="separator" type="text" value=">"></label></div>
+        <div class="row"><label>Global chip background<input id="chipBgAll" type="color" value="#f5f5f5"></label><label>Global chip text<input id="chipTextAll" type="color" value="#000000"></label></div>
+        <div class="row"><label style="grid-column:1/-1;gap:10px"><input id="useGlobalColors" type="checkbox" checked> Force all chips to use the global colors above</label></div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="card">
+        <h4 style="margin:0 0 6px">Buttons (label, text color, chip bg)</h4>
+        <table id="buttonMapTable"></table>
+      </div>
+      <div class="card"><div id="status" class="tiny">No gamepad detected. Press any button. Drag & drop a JSON to import. Click a chip to edit; Delete to remove; double-click to capture with controller.</div></div>
+    </div>
+  </div>
+
+  <script>
+  const overlay=document.getElementById('overlay');
+  const q=new URLSearchParams(location.search);
+  if(q.get('obs')==='1'||window.obsstudio){document.body.classList.add('obs');}
+  if(q.get('edit')==='1'){document.body.classList.remove('obs');}
+  window.addEventListener('keydown',(e)=>{const k=e.key.toLowerCase();
+    if(k==='e') document.body.classList.toggle('obs');
+    if(k==='c') clearOverlay();
+    if((k==='delete'||k==='backspace') && currentSelectedChip){ removeChip(currentSelectedChip); closePopover(); }
+    // Quick prefix via keyboard: ArrowUp or Space adds "j." to selected chip
+    if((k==='arrowup' || k===' ') && currentSelectedChip && !editCapture){ addJPrefix(currentSelectedChip); }
+    const ri=document.getElementById('renameInput');
+    if(ri && document.activeElement===ri){ if(k==='enter'){ ri.dispatchEvent(new Event('apply-enter')); } if(k==='escape'){ closePopover(); }}
+  });
+  const $=(s)=>document.querySelector(s);
+
+  /* ===== Profiles / persistence ===== */
+  const LS_PROFILES='gp_profiles_obs_v13_3';
+  const LS_ACTIVE='gp_active_profile_obs_v13_3';
+  const LS_SCRIPT='gp_script_obs_v13_3';
+  const DEFAULT_BUTTON_LABELS=['L','M','H','S','LB','RB','LT','RT','Select','Start','L3','R3','D↑','D↓','D←','D→'];
+  const DEFAULT_BUTTON_COLORS=Array(16).fill('#000000');
+  const DEFAULT_BUTTON_BG=Array(16).fill('#f5f5f5');
+  function defaultProfile(){return {name:'Default',buttonLabels:[...DEFAULT_BUTTON_LABELS],buttonColors:[...DEFAULT_BUTTON_COLORS],buttonBgColors:[...DEFAULT_BUTTON_BG],deadzone:0.5,chordWindow:80,repeatLockout:110,holdMs:250,motionWindow:700,motionCoupleMs:130,chargeFrames:30,chargeWindow:180,facing:'right',resetAction:'none',separator:'>'}};
+  function loadProfiles(){try{const raw=localStorage.getItem(LS_PROFILES); if(!raw) return [defaultProfile()]; const arr=JSON.parse(raw); return Array.isArray(arr)&&arr.length?arr:[defaultProfile()];}catch{return [defaultProfile()];}}
+  function saveProfiles(){localStorage.setItem(LS_PROFILES, JSON.stringify(profiles));}
+  function loadActive(){const v=parseInt(localStorage.getItem(LS_ACTIVE)||'0',10);return Number.isFinite(v)&&v>=0&&v<profiles.length? v:0;}
+  function saveActive(){localStorage.setItem(LS_ACTIVE, String(activeProfile));}
+  let profiles=loadProfiles(); let activeProfile=loadActive();
+
+  // Import via ?config (base64) or ?configUrl
+  (async function bootConfigFromQuery(){
+    try{
+      if(q.get('config')){
+        const json=JSON.parse(atob(q.get('config'))); if(Array.isArray(json)&&json.length){ profiles=json; activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI(); }
+      }else if(q.get('configUrl')){
+        const url=q.get('configUrl'); if(/^https?:/i.test(url)){ const res=await fetch(url,{cache:'no-store'}); const json=await res.json(); if(Array.isArray(json)&&json.length){ profiles=json; activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI(); } }
+      }
+    }catch(e){ console.warn('Config import error', e); }
+  })();
+
+  // UI refs
+  const profileSelect=$('#profileSelect'), profileName=$('#profileName');
+  const newProfileBtn=$('#newProfile'), dupProfileBtn=$('#dupProfile'), delProfileBtn=$('#delProfile'), saveProfileBtn=$('#saveProfile');
+  const exportBtn=$('#exportBtn'), importBtn=$('#importBtn'), importInput=$('#importInput');
+  const makeObsUrlBtn=$('#makeObsUrl');
+  const buttonMapTable=$('#buttonMapTable');
+  const resetSel=$('#resetAction'); const facingSel=$('#facing'); const statusEl=$('#status');
+
+  const chipFontInp=$('#chipFont'), chipImgHInp=$('#chipImgH'), chipPadXInp=$('#chipPadX'), chipPadYInp=$('#chipPadY'),
+        chipGapInp=$('#chipGap'), chipRadiusInp=$('#chipRadius'), overlayWidthInp=$('#overlayWidth'),
+        separatorInp=$('#separator'), chipBgAllInp=$('#chipBgAll'), chipTextAllInp=$('#chipTextAll'), useGlobalColors=$('#useGlobalColors');
+
+  // Record/playback refs
+  const playbackStyleSel=$('#playbackStyle'), leadInMsInp=$('#leadInMs'), latencyMsInp=$('#latencyMs');
+  const recBtn=$('#recBtn'), stopBtn=$('#stopBtn'), playBtn=$('#playBtn'), loopChk=$('#loopChk');
+  const saveScriptBtn=$('#saveScriptBtn'), loadScriptBtn=$('#loadScriptBtn'), loadScriptInput=$('#loadScriptInput');
+
+  function applyCssKnobs(){
+    document.documentElement.style.setProperty('--chip-font', chipFontInp.value+'px');
+    document.documentElement.style.setProperty('--chip-img-h', chipImgHInp.value+'px');
+    document.documentElement.style.setProperty('--chip-pad-x', chipPadXInp.value+'px');
+    document.documentElement.style.setProperty('--chip-pad-y', chipPadYInp.value+'px');
+    document.documentElement.style.setProperty('--chip-gap', chipGapInp.value+'px');
+    document.documentElement.style.setProperty('--chip-radius', chipRadiusInp.value+'px');
+    document.documentElement.style.setProperty('--overlay-width', overlayWidthInp.value+'px');
+    document.documentElement.style.setProperty('--chip-bg', chipBgAllInp.value);
+    document.documentElement.style.setProperty('--chip-text', chipTextAllInp.value);
+    document.body.classList.toggle('global-override', !!useGlobalColors.checked);
+  }
+
+  function refreshProfileUI(){ if(activeProfile<0||activeProfile>=profiles.length) activeProfile=0; const p=profiles[activeProfile];
+    profileSelect.innerHTML=profiles.map((pp,i)=>`<option value="${i}" ${i===activeProfile?'selected':''}>${escapeHtml(pp.name||`Profile ${i+1}`)}</option>`).join('');
+    profileName.value=p.name||''; renderButtonMap();
+    resetSel && (resetSel.innerHTML = ['none', ...Array.from({length:16},(_,i)=>`button:${i}`)].map(v=>`<option value="${v}" ${p.resetAction===v?'selected':''}>${v}</option>`).join(''));
+    if(facingSel) facingSel.value=p.facing||'right';
+    setInputValue('#deadzone',       p.deadzone);
+    setInputValue('#chordWindow',    p.chordWindow);
+    setInputValue('#repeatLockout',  p.repeatLockout);
+    setInputValue('#holdMs',         p.holdMs);
+    setInputValue('#motionWindow',   p.motionWindow);
+    setInputValue('#motionCoupleMs', p.motionCoupleMs);
+    setInputValue('#chargeFrames',   p.chargeFrames);
+    setInputValue('#chargeWindow',   p.chargeWindow);
+    applyCssKnobs();
+  }
+
+  function setInputValue(sel, val){ const el=document.querySelector(sel); if(el) el.value=val; }
+
+  function renderButtonMap(){ const p=profiles[activeProfile]; let rows='<tr><th>#</th><th>Label</th><th>Text</th><th>Chip BG</th></tr>'; const N=Math.max(16,p.buttonLabels.length);
+    for(let i=0;i<N;i++){ const label=p.buttonLabels[i]??''; const color=p.buttonColors[i]??'#000000'; const bg=p.buttonBgColors[i]??'#f5f5f5';
+      rows+=`<tr><td>#${i}</td><td><input data-btn="${i}" class="btn-label" type="text" value="${escapeHtml(label)}"></td><td><input data-btn-color="${i}" class="btn-color" type="color" value="${color}"></td><td><input data-btn-bg="${i}" class="btn-bg" type="color" value="${bg}"></td></tr>`; }
+    buttonMapTable.innerHTML=rows;
+  }
+
+  profileSelect?.addEventListener('change',e=>{activeProfile=parseInt(e.target.value,10);saveActive();refreshProfileUI();});
+  newProfileBtn?.addEventListener('click',()=>{profiles.push(defaultProfile());activeProfile=profiles.length-1;saveProfiles();saveActive();refreshProfileUI();});
+  dupProfileBtn?.addEventListener('click',()=>{const copy=JSON.parse(JSON.stringify(profiles[activeProfile])); copy.name=(copy.name||'Profile')+' (copy)'; profiles.push(copy); activeProfile=profiles.length-1; saveProfiles(); saveActive(); refreshProfileUI();});
+  delProfileBtn?.addEventListener('click',()=>{ if(profiles.length<=1) return; profiles.splice(activeProfile,1); activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI();});
+  saveProfileBtn?.addEventListener('click',()=>{ const p=profiles[activeProfile]; p.name=profileName.value.trim()||`Profile ${activeProfile+1}`; p.facing=facingSel?.value||p.facing; p.resetAction=resetSel?.value||p.resetAction; p.separator=separatorInp.value||'>'; p.deadzone=parseFloat($('#deadzone')?.value)||p.deadzone; p.chordWindow=parseInt($('#chordWindow')?.value)||p.chordWindow; p.repeatLockout=parseInt($('#repeatLockout')?.value)||p.repeatLockout; p.holdMs=parseInt($('#holdMs')?.value)||p.holdMs; p.motionWindow=parseInt($('#motionWindow')?.value)||p.motionWindow; p.motionCoupleMs=parseInt($('#motionCoupleMs')?.value)||p.motionCoupleMs; p.chargeFrames=parseInt($('#chargeFrames')?.value)||p.chargeFrames; p.chargeWindow=parseInt($('#chargeWindow')?.value)||p.chargeWindow; saveProfiles(); refreshProfileUI();});
+
+  exportBtn?.addEventListener('click',()=>{const blob=new Blob([JSON.stringify(profiles,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='gamepad_profiles.json'; a.click(); URL.revokeObjectURL(url);});
+  importBtn?.addEventListener('click',()=>importInput.click());
+  importInput?.addEventListener('change',async(e)=>{const f=e.target.files?.[0]; if(!f) return; const text=await f.text(); try{ const arr=JSON.parse(text); if(Array.isArray(arr)&&arr.length){ profiles=arr; activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI(); } }catch(err){ console.warn('Import error', err); }});
+  makeObsUrlBtn?.addEventListener('click',()=>{ try{ const b64=btoa(JSON.stringify(profiles)); const here=location.href.split('?')[0]; const url=`${here}?obs=1&config=${b64}`; navigator.clipboard?.writeText(url); statusEl.textContent='Copied OBS URL with embedded config'; }catch{ statusEl.textContent='Could not encode config (too large?)'; }});
+
+  // Live CSS knobs + global override
+  document.addEventListener('input',(e)=>{
+    const p=profiles[activeProfile]; if(!p) return; const t=e.target;
+    if(t.matches('.btn-label')) p.buttonLabels[parseInt(t.dataset.btn,10)] = t.value;
+    if(t.matches('.btn-color')) p.buttonColors[parseInt(t.dataset.btnColor,10)] = t.value;
+    if(t.matches('.btn-bg')) p.buttonBgColors[parseInt(t.dataset.btnBg,10)] = t.value;
+    if([chipFontInp,chipImgHInp,chipPadXInp,chipPadYInp,chipGapInp,chipRadiusInp,overlayWidthInp,chipBgAllInp,chipTextAllInp].includes(t)) applyCssKnobs();
+    if(t===separatorInp){ p.separator=separatorInp.value||'>'; rebuildBuffer(); }
+    if(t===useGlobalColors){ applyCssKnobs(); }
+    saveProfiles();
+  });
+
+  /* ===== Drag & Drop import ===== */
+  ;['dragenter','dragover','drop','dragleave'].forEach(evt=>window.addEventListener(evt,(e)=>{ if(evt!=='drop') e.preventDefault(); if(evt==='drop'){ const f=e.dataTransfer?.files?.[0]; if(f){ f.text().then(txt=>{ try{const arr=JSON.parse(txt); if(Array.isArray(arr)&&arr.length){ profiles=arr; activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI(); statusEl.textContent='Imported profile (drag & drop)'; } }catch(err){ console.warn('DnD import error',err); } }); } } }));
+
+  /* ===== Overlay helpers ===== */
+  function addSeparator(){ if(overlay.children.length){const s=document.createElement('span');s.className='sep'; s.textContent=(profiles[activeProfile].separator||'>'); overlay.appendChild(s);} }
+  function currentSeparator(){ return ' ' + (profiles[activeProfile].separator||'>') + ' '; }
+  function rebuildBuffer(){ const chips=[...overlay.querySelectorAll('.chip')]; buffer = chips.map(ch=>ch.innerText.trim()); }
+  let buffer=[];
+  let editCapture=false; // when true, controller edits the selected chip
+
+  // ===== Recording / Playback =====
+  let isRecording=false, recordStart=0;
+  let script={ name:'Untitled', latencyMs:0, leadInMs:600, mode:'sweep', events:[] };
+  let playback=null; // {start, i, running, tickEl}
+
+  function startRecording(){
+    isRecording=true; recordStart=performance.now();
+    script={ name:'Untitled', latencyMs: parseInt(latencyMsInp.value||'0',10)||0, leadInMs: parseInt(leadInMsInp.value||'600',10)||600, mode: playbackStyleSel.value, events:[] };
+    statusEl.textContent='Recording… perform your combo. Press Stop when done.';
+  }
+  function stopAllPlayback(){
+    if(playback && playback.tickEl){ playback.tickEl.remove(); }
+    playback=null;
+    // clear sweep visuals
+    [...overlay.querySelectorAll('.chip')].forEach(ch=>{ ch.classList.remove('playback-sweep','hit','miss'); ch.style.removeProperty('--pct'); });
+  }
+  function stopRecording(){
+    isRecording=false;
+    statusEl.textContent = `Recorded ${script.events.length} event(s).`;
+    // persist
+    try{ localStorage.setItem(LS_SCRIPT, JSON.stringify(script)); }catch{}
+  }
+  function chipForEventIndex(idx){
+    const chips=[...overlay.querySelectorAll('.chip')];
+    return chips[idx] || null;
+  }
+  function logRecordedChip(chip){
+    if(!isRecording) return;
+    const chips=[...overlay.querySelectorAll('.chip')];
+    const idx=chips.indexOf(chip);
+    if(idx>=0) script.events.push({ t: Math.round(performance.now()-recordStart), chipIndex: idx });
+  }
+
+  function startPlayback(){
+    if(!script.events.length){ statusEl.textContent='No events to play. Record first.'; return; }
+    stopAllPlayback();
+    script.latencyMs=parseInt(latencyMsInp.value||'0',10)||0;
+    script.leadInMs=parseInt(leadInMsInp.value||'600',10)||600;
+    script.mode=playbackStyleSel.value;
+
+    // sanitize/prepare
+    script.events.sort((a,b)=>a.t-b.t);
+    playback={ start: performance.now(), i:0, running:true, tickEl:null };
+
+    // visuals
+    if(script.mode==='sweep'){
+      overlay.querySelectorAll('.chip').forEach(ch=>ch.classList.add('playback-sweep'));
+    }else if(script.mode==='tick'){
+      const el=document.createElement('div'); el.className='tick-cursor'; overlay.appendChild(el); playback.tickEl=el;
+    }
+    statusEl.textContent=`Playing (${script.mode})…`;
+    requestAnimationFrame(rafPlayback);
+  }
+
+  function rafPlayback(){
+    if(!playback || !playback.running) return;
+    const now=performance.now();
+    const elapsed= now - playback.start - (script.latencyMs||0);
+    const leadIn= script.leadInMs || 600;
+
+    // progress events
+    for(let k=playback.i;k<script.events.length;k++){
+      const ev=script.events[k];
+      const chip=chipForEventIndex(ev.chipIndex);
+      if(!chip) continue;
+      const eta= ev.t - elapsed; // ms until event
+
+      if(script.mode==='sweep'){
+        if(eta > -150 && eta < leadIn){
+          const pct = Math.max(0, Math.min(1, 1 - eta/leadIn));
+          chip.style.setProperty('--pct', pct.toFixed(4));
+        }else{
+          chip.style.removeProperty('--pct');
+        }
+      }
+
+      // Tick cursor position between previous and current chip centers
+      if(script.mode==='tick' && playback.tickEl){
+        // find prev target (k-1) for interpolation
+        let prevCenter = 0;
+        if(k>0){
+          const prevEv=script.events[k-1];
+          const prevChip=chipForEventIndex(prevEv.chipIndex);
+          if(prevChip) prevCenter = prevChip.offsetLeft + prevChip.offsetWidth/2;
+        }else{
+          // start a bit before first chip
+          prevCenter = Math.max(0, chip.offsetLeft + chip.offsetWidth/2 - 60);
+        }
+        const curCenter = chip.offsetLeft + chip.offsetWidth/2;
+        const pct = Math.max(0, Math.min(1, 1 - eta/leadIn));
+        const x = prevCenter + (curCenter - prevCenter) * pct;
+        playback.tickEl.style.left = `${x}px`;
+      }
+
+      // Hit / miss pulse at event time boundary
+      if(eta <= 0 && !ev._done){
+        ev._done = true;
+        playback.i = k+1;
+        // simple success pulse (no grading yet)
+        chip.classList.add('hit');
+        setTimeout(()=>chip.classList.remove('hit'), 120);
+      }
+    }
+
+    if(playback.i >= script.events.length){
+      if(loopChk.checked){
+        // reset state for looping
+        script.events.forEach(ev=>{ delete ev._done; });
+        playback.i=0; playback.start=performance.now();
+        requestAnimationFrame(rafPlayback);
+      }else{
+        statusEl.textContent='Playback finished.';
+        playback.running=false;
+        // keep visuals until Stop or next Play
+      }
+      return;
+    }
+    requestAnimationFrame(rafPlayback);
+  }
+
+  recBtn.addEventListener('click', startRecording);
+  stopBtn.addEventListener('click', ()=>{ if(isRecording) stopRecording(); stopAllPlayback(); });
+  playBtn.addEventListener('click', ()=>{ stopAllPlayback(); startPlayback(); });
+
+  saveScriptBtn.addEventListener('click', ()=>{
+    try{
+      const blob=new Blob([JSON.stringify(script,null,2)],{type:'application/json'});
+      const url=URL.createObjectURL(blob); const a=document.createElement('a');
+      a.href=url; a.download=(script.name||'combo_script')+'.json'; a.click(); URL.revokeObjectURL(url);
+    }catch(e){ console.warn(e); }
+  });
+  loadScriptBtn.addEventListener('click', ()=> loadScriptInput.click());
+  loadScriptInput.addEventListener('change', async (e)=>{
+    const f=e.target.files?.[0]; if(!f) return;
+    try{
+      const txt=await f.text(); const obj=JSON.parse(txt);
+      if(obj && Array.isArray(obj.events)){ script=obj; statusEl.textContent=`Loaded script (${obj.events.length} events).`; }
+    }catch(err){ console.warn('Load script error', err); }
+  });
+
+  // Load last script if present
+  try{ const raw=localStorage.getItem(LS_SCRIPT); if(raw){ const obj=JSON.parse(raw); if(obj?.events) script=obj; } }catch{}
+
+  function addChipElHTML(html, perButtonBg){
+    if(overlay.children.length) addSeparator();
+    const c=document.createElement('span'); c.className='chip'; c.innerHTML=html; c.tabIndex=0;
+    if(!useGlobalColors.checked && perButtonBg) c.style.backgroundColor = perButtonBg;
+    c.addEventListener('click', (ev)=>{ selectChip(c); openPopover(c); ev.stopPropagation(); });
+    c.addEventListener('dblclick', (ev)=>{ selectChip(c); openPopover(c, true); ev.stopPropagation(); });
+    overlay.appendChild(c); overlay.scrollLeft=overlay.scrollWidth; rebuildBuffer();
+    // record event if we are recording
+    logRecordedChip(c);
+    return c;
+  }
+
+  function clearOverlay(){ overlay.innerHTML=''; buffer.length=0; activeButtonChips.clear(); lastCharged={tok:null,at:0}; closePopover(); currentSelectedChip=null; editCapture=false; stopAllPlayback(); }
+  $('#clearBtn')?.addEventListener('click', clearOverlay);
+  $('#copyBtn')?.addEventListener('click', ()=>{ const txt=buffer.join(currentSeparator().trim()); navigator.clipboard?.writeText(txt); });
+  let modeLive=true; $('#toggleMode')?.addEventListener('click',()=>{ modeLive=!modeLive; $('#toggleMode').textContent='Mode: '+(modeLive?'Live':'Record'); });
+
+  // PNG Copy/Export
+  async function overlayToCanvas(){
+    const node=overlay; const rect=node.getBoundingClientRect();
+    const width=Math.ceil(rect.width); const height=Math.ceil(rect.height);
+    const styleTag=[...document.head.querySelectorAll('style')].map(s=>s.textContent).join('\n');
+    const html = `<div xmlns="http://www.w3.org/1999/xhtml" class="export-root">`+
+                 `<style>${styleTag}</style>`+
+                 `<div id="overlay" style="max-width:${width}px">${node.innerHTML}</div>`+
+                 `</div>`;
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'>`+
+                `<foreignObject width='100%' height='100%'>${html}</foreignObject>`+
+                `</svg>`;
+    const svgBlob=new Blob([svg],{type:'image/svg+xml;charset=utf-8'}); const url=URL.createObjectURL(svgBlob);
+    await new Promise(r=>requestAnimationFrame(r));
+    const img=new Image(); img.decoding='async'; img.onload=()=>URL.revokeObjectURL(url); img.src=url; await img.decode();
+    const canvas=document.createElement('canvas'); canvas.width=width; canvas.height=height; const ctx=canvas.getContext('2d'); ctx.drawImage(img,0,0);
+    return canvas;
+  }
+  async function copyPNG(){ try{ const canvas=await overlayToCanvas(); const blob=await new Promise(res=>canvas.toBlob(res,'image/png')); await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]); statusEl.textContent='Copied overlay as PNG to clipboard.'; }catch(err){ console.warn(err); statusEl.textContent='Copy PNG failed (browser permissions?)'; } }
+  async function exportPNG(){ try{ const canvas=await overlayToCanvas(); const url=canvas.toDataURL('image/png'); const a=document.createElement('a'); a.href=url; a.download='overlay.png'; a.click(); statusEl.textContent='Exported overlay as PNG.'; }catch(err){ console.warn(err); statusEl.textContent='Export PNG failed.'; } }
+  $('#copyPngBtn')?.addEventListener('click', copyPNG);
+  $('#exportPngBtn')?.addEventListener('click', exportPNG);
+
+  /* ===== Gamepad ===== */
+  let gamepadIndex=null; let prevButtons=[]; let lastButtonTime=new Map();
+  const activeButtonChips=new Map(); // idx -> {chip,label,pressAt,held}
+  window.addEventListener('gamepadconnected',e=>{gamepadIndex=e.gamepad.index;prevButtons=e.gamepad.buttons.map(b=>b.pressed); statusEl.textContent=`Connected: ${e.gamepad.id}`;});
+  window.addEventListener('gamepaddisconnected',()=>{gamepadIndex=null; statusEl.textContent='Gamepad disconnected';});
+  function now(){return performance.now();}
+  function poll(){const gps=navigator.getGamepads?.(); let gp=(gamepadIndex!=null)?gps[gamepadIndex]:null; if(!gp){for(const g of gps){if(g){gp=g;gamepadIndex=g.index;prevButtons=g.buttons.map(b=>b.pressed);break;}}}
+    if(gp){handleButtons(gp);trackDirections(gp);} requestAnimationFrame(poll);} requestAnimationFrame(poll);
+
+  /* ===== Directions & motions ===== */
+  function tokenFromAxes(ax,ay,dz=0.5){let h=null,v=null;if(Math.abs(ax)>=dz)h=ax<0?'l':'r';if(Math.abs(ay)>=dz)v=ay<0?'u':'d';if(h&&v)return v+h;return h||v||'n';}
+  function dirToImg(tok){const map={u:'u',d:'d',l:'b',r:'f',ul:'ub',ur:'uf',dl:'db',dr:'df'};if(!map[tok])return null;return `<img class="img" src="images/${map[tok]}.png" alt="${map[tok]}">`;}
+  let dirHistory=[]; let lastTok='n';
+  function trackDirections(gp){
+    const p=profiles[activeProfile];
+    const dU=gp.buttons[12]?.pressed, dD=gp.buttons[13]?.pressed, dL=gp.buttons[14]?.pressed, dR=gp.buttons[15]?.pressed;
+    let tok='n'; if(dL) tok='l'; else if(dR) tok='r'; if(dU) tok=(tok==='r')?'ur':(tok==='l')?'ul':'u'; else if(dD) tok=(tok==='r')?'dr':(tok==='l')?'dl':'d';
+    if(tok==='n') tok=tokenFromAxes(gp.axes[0]||0,gp.axes[1]||0,p.deadzone||0.5);
+    const t=now();
+    if(!dirHistory.length||dirHistory[dirHistory.length-1].token!==tok){ dirHistory.push({t,token:tok}); const win=Math.max(700, p.motionWindow||700)+200; while(dirHistory.length && (t-dirHistory[0].t) > win) dirHistory.shift(); }
+    updateCharge(tok);
+
+    // Up prefix outside capture only
+    if(!editCapture && currentSelectedChip && lastTok!=='u' && tok==='u'){ addJPrefix(currentSelectedChip); }
+
+    // In capture we buffer direction only (no DOM mutation)
+    if(editCapture){ captureDirTok = tok; }
+    lastTok=tok;
+  }
+  function facingMap(tok){ if((profiles[activeProfile].facing||'right')==='right') return tok; return tok.replace(/l/g,'R').replace(/r/g,'l').replace(/R/g,'r'); }
+  function compressedSeqWithin(ms){ const t=now(), start=t-ms; const seq=dirHistory.filter(e=>e.t>=start).map(e=>e.token).filter(x=>x!=='n').map(facingMap); const comp=[]; for(const s of seq){ if(!comp.length||comp[comp.length-1]!==s) comp.push(s);} return comp; }
+  function matchPattern(seq, pattern){ let i=0; for(const p of pattern){ i=seq.indexOf(p,i); if(i===-1) return false; i++; } return true; }
+  function detectMotionForButton(){ const p=profiles[activeProfile]; const seq=compressedSeqWithin(p.motionWindow||700);
+    const tests=[ ['qcf',['d','dr','r']], ['qcb',['d','dl','l']], ['dpf',['r','d','dr']], ['dpb',['l','d','dl']], ['hcf',['l','d','r']], ['hcb',['r','d','l']] ];
+    for(const [key,pat] of tests){ if(matchPattern(seq,pat)) return `<img class="img" src="images/${key}.png" alt="${key}">`; }
+    const set=new Set(seq); if(['u','d','l','r'].every(k=>set.has(k))) return `<img class="img" src="images/360.png" alt="360">`;
+    return null; }
+  function snapshotDirection(){ const last=dirHistory.length?dirHistory[dirHistory.length-1].token:'n'; return last==='n'?null:last; }
+
+  /* ===== Charge ===== */
+  let currentDirTok='n', currentDirStart=0, lastCharged={tok:null, at:0};
+  function updateCharge(latestTok){ const p=profiles[activeProfile]; const t=now(); if(latestTok!==currentDirTok){ if(currentDirTok!=='n'){ const heldMs=t-currentDirStart; const needMs=(p.chargeFrames||30)*(1000/60); if(heldMs>=needMs){ lastCharged={tok:currentDirTok, at:t}; } } currentDirTok=latestTok; currentDirStart=t; } }
+  function isOpposite(a,b){ if(a?.includes('l') && b?.includes('r')) return true; if(a?.includes('r') && b?.includes('l')) return true; if(a?.includes('u') && b?.includes('d')) return true; if(a?.includes('d') && b?.includes('u')) return true; return false; }
+
+  /* ===== Buttons & holds ===== */
+  const holdTimers=new Map();
+
+  // capture buffers
+  let captureDirTok='n';
+
+  function handleButtons(gp){ const p=profiles[activeProfile]; if(!prevButtons.length) prevButtons=gp.buttons.map(b=>b.pressed); const t=now(); const justPressed=[], justReleased=[];
+    for(let i=0;i<gp.buttons.length;i++){
+      const pressed=!!gp.buttons[i].pressed, was=!!prevButtons[i];
+      if(pressed && !was){ const last=lastButtonTime.get(i)||0; if(t-last >= (p.repeatLockout||110)){
+          if((p.resetAction||'none')===`button:${i}`){ clearOverlay(); lastButtonTime.set(i,t); prevButtons[i]=pressed; continue; }
+          if(editCapture && currentSelectedChip && i<12){ replaceChipFromController(i); lastButtonTime.set(i,t); prevButtons[i]=pressed; continue; }
+          if(currentSelectedChip && i===12 && !editCapture){ addJPrefix(currentSelectedChip); lastButtonTime.set(i,t); prevButtons[i]=pressed; continue; }
+          justPressed.push(i); lastButtonTime.set(i,t);
+        } }
+      if(!pressed && was){ justReleased.push(i); }
+      prevButtons[i]=pressed;
+    }
+
+    for(const i of justPressed){ if(i>=12&&i<=15) continue; if(editCapture && currentSelectedChip) continue; let html=null;
+      const age=t-(lastCharged.at||0); const nowDir=snapshotDirection()||'';
+      if(lastCharged.tok && age <= (p.chargeWindow||180) && isOpposite(lastCharged.tok, nowDir)){
+        const first=dirToImg(lastCharged.tok)||lastCharged.tok.toUpperCase();
+        const second=dirToImg(nowDir)||nowDir.toUpperCase();
+        html = `${first} ${second} ${buttonHTML(i)}`; lastCharged.tok=null;
+      }
+      if(!html){ const motionHTML=detectMotionForButton(); if(motionHTML){ html = `${motionHTML} ${buttonHTML(i)}`; } }
+      if(!html){ const dirTok=snapshotDirection(); if(dirTok){ const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase(); html = `${dirHTML} + ${buttonHTML(i)}`; } else { html = buttonHTML(i); } }
+      const chip = addChipElHTML(html, (profiles[activeProfile].buttonBgColors[i]||'#f5f5f5'));
+      activeButtonChips.set(i,{chip,label:(profiles[activeProfile].buttonLabels[i]||`#${i}`),pressAt:t,held:false});
+      const holdId=setTimeout(()=>{ const obj=activeButtonChips.get(i); if(!obj) return; obj.held=true; mutateLabelText(obj.chip, obj.label, `[${obj.label}]`); rebuildBuffer(); }, p.holdMs||250); holdTimers.set(i,holdId);
+    }
+
+    for(const i of justReleased){ const obj=activeButtonChips.get(i); clearTimeout(holdTimers.get(i)); holdTimers.delete(i); if(obj){ if(obj.held){ addChipElHTML(buttonHTML(i, `]${obj.label}[`), (profiles[activeProfile].buttonBgColors[i]||'#f5f5f5')); } activeButtonChips.delete(i); rebuildBuffer(); } }
+  }
+
+  function buttonHTML(btnIndex, override){ const p=profiles[activeProfile]; const text = override ?? (p.buttonLabels[btnIndex] || `#${btnIndex}`);
+    const color = useGlobalColors.checked ? getComputedStyle(document.documentElement).getPropertyValue('--chip-text').trim() : (p.buttonColors[btnIndex] || '#000000');
+    return `<span style="color:${color}">${escapeHtml(text)}</span>`; }
+
+  function addJPrefix(chip){ const lastSpan=chip.querySelector('span:last-of-type'); if(!lastSpan) return; const cur=lastSpan.textContent.trim(); if(cur.toLowerCase().startsWith('j.')) return; lastSpan.textContent='j.'+cur; rebuildBuffer(); }
+
+  // Replace button for selected chip; apply buffered direction (no live DOM spam)
+  function replaceChipFromController(btnIndex){
+    if(!currentSelectedChip) return;
+    const dirTok = editCapture ? captureDirTok : (snapshotDirection() || 'n');
+    const motionHTML = detectMotionForButton();
+    const p=profiles[activeProfile];
+    let finalLabel = (p.buttonLabels[btnIndex] || `#${btnIndex}`);
+    if(dirTok === 'u' && !/^j\./i.test(finalLabel)) finalLabel = 'j.' + finalLabel;
+    let html;
+    if(motionHTML){
+      html = `${motionHTML} ${buttonHTML(btnIndex, finalLabel)}`;
+    }else if(dirTok && dirTok !== 'n'){
+      const dirHTML = dirToImg(dirTok) || dirTok.toUpperCase();
+      html = `${dirHTML} + ${buttonHTML(btnIndex, finalLabel)}`;
+    }else{
+      html = buttonHTML(btnIndex, finalLabel);
+    }
+    currentSelectedChip.innerHTML = html;
+    rebuildBuffer(); closePopover();
+  }
+
+  function mutateLabelText(chipEl, oldText, newText){
+    const spans = chipEl.querySelectorAll('span');
+    for(let i = spans.length - 1; i >= 0; i--){ const sp = spans[i]; if(sp.textContent.trim() === oldText){ sp.textContent = newText; return; } }
+    chipEl.innerHTML = chipEl.innerHTML.replace(new RegExp(escapeRegExp(oldText) + '(?!.*' + escapeRegExp(oldText) + ')'), ' ' + newText + ' ');
+  }
+  function escapeRegExp(s){ return s.replace(new RegExp('[.*+?^${}()|[\\]\\\\]', 'g'), '\\$&'); }
+  function escapeHtml(s=''){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+
+  /* ===== Chip selection + editor popover ===== */
+  let currentSelectedChip=null, popEl=null;
+  document.addEventListener('click', (e)=>{ if(popEl && !popEl.contains(e.target) && currentSelectedChip && !currentSelectedChip.contains(e.target)){ closePopover(); deselectChip(); } });
+  function selectChip(chip){ if(currentSelectedChip===chip) return; deselectChip(); currentSelectedChip=chip; chip.classList.add('selected'); chip.focus(); }
+  function deselectChip(){ if(currentSelectedChip){ currentSelectedChip.classList.remove('selected'); currentSelectedChip.classList.remove('capture'); currentSelectedChip=null; } }
+
+  function openPopover(chip, startInEdit=false){
+    closePopover();
+    const rect=chip.getBoundingClientRect();
+    const p=document.createElement('div'); p.className='popover';
+    p.style.left = Math.max(8, Math.min(window.innerWidth-300, rect.left))+'px';
+    p.style.top  = (rect.bottom + 6)+'px';
+    p.innerHTML = `
+      <h5>Chip actions</h5>
+      <div class="row" style="grid-template-columns:1fr auto">
+        <input id="renameInput" type="text" placeholder="New label…" />
+        <button id="applyBtn" class="btn">Apply</button>
+      </div>
+      <div class="row" style="margin-top:8px;grid-template-columns:1fr 1fr">
+        <button id="captureBtn" class="btn">Use controller…</button>
+        <button id="delBtn" class="btn danger">Delete</button>
+      </div>
+      <div class="row" style="margin-top:8px;grid-template-columns:1fr 1fr">
+        <button id="clearDirBtn" class="btn">Clear direction</button>
+        <button id="clearMotionBtn" class="btn">Clear motion</button>
+      </div>
+      <div class="tiny" style="margin-top:6px">Tips: Enter to apply · Esc to cancel · Up/Space adds "j." (outside capture). In capture: tilt for direction, press to set.</div>`;
+    document.body.appendChild(p); popEl=p;
+
+    const renameInput=$('#renameInput'), applyBtn=$('#applyBtn'), delBtn=$('#delBtn'), captureBtn=$('#captureBtn');
+    const clearDirBtn=$('#clearDirBtn'), clearMotionBtn=$('#clearMotionBtn');
+    const lastSpan = chip.querySelector('span:last-of-type');
+    renameInput.value = lastSpan ? lastSpan.textContent.trim() : '';
+    if(startInEdit){ renameInput.blur(); startControllerCapture(); } else { renameInput.focus(); }
+
+    applyBtn.addEventListener('click', ()=>{ const oldTxt = lastSpan ? lastSpan.textContent.trim() : ''; const newTxt = renameInput.value.trim(); if(newTxt && oldTxt && newTxt!==oldTxt){ mutateLabelText(chip, oldTxt, newTxt); rebuildBuffer(); } closePopover(); });
+    renameInput.addEventListener('apply-enter', ()=>applyBtn.click());
+    delBtn.addEventListener('click', ()=>{ removeChip(chip); closePopover(); });
+    captureBtn.addEventListener('click', ()=> startControllerCapture());
+    clearDirBtn.addEventListener('click', ()=>{ // remove direction icon and j.
+      const imgs=[...chip.querySelectorAll('img')]; for(const img of imgs){ const a=img.alt; if(['u','d','b','f','ub','uf','db','df'].includes(a)) img.remove(); }
+      const span=chip.querySelector('span:last-of-type'); if(span){ span.textContent=span.textContent.replace(/^j\./i,''); }
+      rebuildBuffer();
+    });
+    clearMotionBtn.addEventListener('click', ()=>{ [...chip.querySelectorAll('img')].forEach(img=>{ if(['qcf','qcb','dpf','dpb','hcf','hcb','360'].includes(img.alt)) img.remove(); }); rebuildBuffer(); });
+
+    function startControllerCapture(){ editCapture=true; captureDirTok='n'; selectChip(chip); chip.classList.add('capture'); statusEl.textContent='Capture: tilt for direction (buffered), press a button to set; UP prefixes j.'; }
+  }
+  function closePopover(){ if(popEl){ popEl.remove(); popEl=null; } if(currentSelectedChip) currentSelectedChip.classList.remove('capture'); editCapture=false; }
+
+  function removeChip(chip){ if(!chip) return; const prev = chip.previousSibling, next = chip.nextSibling; if(prev && prev.classList && prev.classList.contains('sep')) prev.remove(); else if(next && next.classList && next.classList.contains('sep')) next.remove(); chip.remove(); if(currentSelectedChip===chip) currentSelectedChip=null; rebuildBuffer(); }
+
+  /* ===== Init ===== */
+  refreshProfileUI();
+  applyCssKnobs();
+  </script>
+</body>
+</html>

@@ -1,0 +1,223 @@
+:root{
+  --fg:#e7e7ea; --bg:transparent; --panel:#1b1e25; --panel-brd:#2a2f3a; --accent:#3a4cff; --muted:#9aa3b2;
+  --overlay-width:800px; --sep: ">";
+  --chip-font:18px; --chip-img-h:20px; --chip-pad-x:12px; --chip-pad-y:6px; --chip-gap:10px; --chip-radius:999px;
+  --chip-bg:#f5f5f5; --chip-brd:rgba(0,0,0,.25); --chip-text:#000000;
+}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,"Noto Sans"}
+*{box-sizing:border-box}
+
+#overlayWrap{position:sticky;top:0;padding:10px 12px;background:linear-gradient(180deg, rgba(0,0,0,.35), rgba(0,0,0,0));backdrop-filter:saturate(1.2)}
+#overlay{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:var(--chip-gap);background:rgba(18,18,22,.66);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:8px 12px;min-height:48px;max-width:var(--overlay-width);overflow-x:auto}
+.chip{display:inline-flex;align-items:center;gap:6px;font-weight:800;font-size:var(--chip-font);line-height:1;padding:var(--chip-pad-y) var(--chip-pad-x);border-radius:var(--chip-radius);background:var(--chip-bg);border:1px solid var(--chip-brd);color:var(--chip-text);user-select:none;cursor:default;outline:none}
+.chip:focus{box-shadow:0 0 0 2px rgba(58,76,255,.6)}
+.chip.selected{box-shadow:0 0 0 2px #fff8;border-color:#fff}
+.chip.capture{box-shadow:0 0 0 2px var(--accent), 0 0 14px rgba(58,76,255,.6);position:relative}
+.chip.capture::after{content:"CAPTURE";position:absolute;top:-10px;right:-10px;background:var(--accent);color:#fff;font-size:10px;font-weight:900;padding:2px 6px;border-radius:999px}
+@keyframes pulse{from{filter:saturate(1)}to{filter:saturate(1.6)}} .chip.capture{animation:pulse .9s ease-in-out infinite alternate}
+.img{height:var(--chip-img-h);vertical-align:middle}
+.sep{font-weight:900;opacity:.9;padding:0 6px;user-select:none}
+.global-override .chip{background:var(--chip-bg)!important; color:var(--chip-text)!important}
+
+/* Playback A: chip sweep fill */
+.chip.playback-sweep{background-image: linear-gradient(90deg, rgba(58,76,255,.28), rgba(58,76,255,.28));background-repeat:no-repeat;background-size: calc(var(--pct,0) * 100%) 100%;transition: background-size 16ms linear}
+.chip.hit{ box-shadow:0 0 0 2px rgba(58,76,255,.9) }
+.chip.miss{ box-shadow:0 0 0 2px rgba(220,50,47,.9) }
+
+/* Playback B: moving tick cursor */
+.tick-cursor{position:absolute; top:4px; bottom:4px; width:2px;background:rgba(255,255,255,.9); border-radius:2px; pointer-events:none; z-index:5;opacity:.9; transform:translateX(-50%)}
+
+.popover{position:fixed; z-index:10000; background:#151821; border:1px solid #2a2f3a; color:#e7ebf3;border-radius:10px; padding:8px; box-shadow:0 8px 26px rgba(0,0,0,.45); width:280px}
+.popover h5{margin:0 0 6px;font-size:12px;color:#9aa3b2;font-weight:700;letter-spacing:.02em}
+.popover .row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+.popover .btn{appearance:none;border:1px solid #2a2f3a;border-radius:8px;padding:6px 10px;background:#30384b;color:#eef0f5;font-weight:700;cursor:pointer}
+.popover .btn.danger{background:#5b1b2a;border-color:#7d2236}
+.popover input[type="text"]{width:100%;padding:6px 8px;border-radius:8px;border:1px solid #2a2f3a;background:#262b36;color:#eef0f5}
+
+.wrap{display:grid;grid-template-columns:1fr 440px;gap:12px;padding:8px 12px}
+.col{display:grid;gap:12px;align-content:start;max-height:calc(100vh - 120px);overflow:auto}
+.card{background:var(--panel);border:1px solid var(--panel-brd);border-radius:12px;padding:10px;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+.row-tight{grid-template-columns:1fr auto auto auto auto;gap:6px}
+.grid-2{grid-template-columns:1fr 1fr;gap:8px}
+.grid-3{grid-template-columns:1fr 1fr 1fr;gap:8px}
+.btn{appearance:none;border:1px solid var(--panel-brd);border-radius:10px;padding:8px 10px;cursor:pointer;font-weight:700;background:#2a3040;color:#eef0f5}
+.btn.primary{background:var(--accent);border-color:transparent;color:white}
+.btn.ghost{background:transparent}
+select,input[type="number"],input[type="text"],input[type="color"]{width:100%;padding:6px 8px;border-radius:8px;border:1px solid var(--panel-brd);background:#262b36;color:#eef0f5;outline:none}
+select option{background:#262b36;color:#eef0f5}
+label{display:flex;align-items:center;gap:8px}
+label.full{grid-column:1/-1;gap:10px}
+.h4{margin:0 0 6px}
+.tiny{font-size:12px;color:var(--muted)}
+body.obs .wrap{display:none}
+
+
+/* Per-chip progress fill (uses --pct from 0..1) */
+.chip.playback-sweep{
+  position: relative;
+  overflow: hidden;
+}
+.chip.playback-sweep::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  /* Use accent tint; adjust alpha if you like */
+  background: linear-gradient(to right,
+    rgba(58,76,255,0.35) 0%,
+    rgba(58,76,255,0.35) calc(var(--pct, 0) * 100%),
+    transparent calc(var(--pct, 0) * 100%)
+  );
+  pointer-events:none;
+}
+
+/* Hit flash + tiny pop so it reads even over busy gameplay */
+.chip.highlight{
+  animation: hitFlash 180ms ease-out;
+}
+@keyframes hitFlash{
+  0%{ transform: scale(1.00); box-shadow: 0 0 0 0 rgba(255,255,255,0.9); }
+  100%{ transform: scale(1.04); box-shadow: 0 0 0 10px rgba(255,255,255,0); }
+}
+
+/* Optional: a more visible tick cursor */
+.tick-cursor{
+  position:absolute;
+  top:0;
+  bottom:0;
+  width:2px;
+  background: rgba(255,255,255,0.85);
+  box-shadow: 0 0 8px rgba(255,255,255,0.8);
+  pointer-events:none;
+}
+
+/* grading colors */
+.chip.grade-perfect { box-shadow: 0 0 0 2px #00e676; }
+.chip.grade-great   { box-shadow: 0 0 0 2px #64ffda; }
+.chip.grade-good    { box-shadow: 0 0 0 2px #fff176; }
+.chip.grade-early   { box-shadow: 0 0 0 2px #29b6f6; }
+.chip.grade-late    { box-shadow: 0 0 0 2px #ff8a65; }
+.chip.grade-miss    { box-shadow: 0 0 0 2px #ff5252; }
+
+/* optional small badge in the corner for the delta */
+.chip .grade-badge{
+  position:absolute; top:-6px; right:-6px;
+  font-size:10px; font-weight:900; color:#111;
+  background:#fff; border-radius:999px; padding:2px 6px;
+  box-shadow:0 2px 8px rgba(0,0,0,.35);
+}
+.chip{ position:relative } /* to position badge */
+
+
+/* Practice mode framing */
+body.practice .wrap { display:none; }           /* hide full settings */
+#practiceBar { 
+  position:sticky; top:0; z-index:9999;
+  background:rgba(18,18,22,.9);
+  border-bottom:1px solid rgba(255,255,255,.08);
+  padding:6px 10px;
+}
+#practiceBar .practice-inner {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:12px; max-width:var(--overlay-width); margin:0 auto;
+}
+#practiceBar label { display:flex; align-items:center; gap:6px; font-size:12px; }
+#practiceBar input[type="number"] {
+  width:92px; padding:4px 6px; border-radius:8px;
+  border:1px solid var(--panel-brd); background:#262b36; color:#eef0f5;
+}
+#practiceBar .btn { padding:6px 10px; font-size:12px; }
+
+
+/* When enabled, stretch overlay to window width */
+body.fullwidth { --overlay-width: 100vw; }
+
+/* Ensure the overlay wrapper actually uses the var */
+#overlayWrap { max-width: var(--overlay-width); width: 100%; }
+
+
+/* Vertical timing tell — right edge, wider, higher contrast */
+
+
+.chip .tell{
+  position:absolute;
+  right:-13px;                 /* to the right of the chip */
+  top:0; bottom:0;
+  width:8px;                   /* a bit wider per your request */
+  background: rgba(0,0,0);/* stands out on gray background */
+  border-radius: 6px;
+  overflow:hidden;
+  pointer-events:none;
+}
+
+.chip .tell i{
+  position:absolute;
+  left:0; right:0; bottom:0;
+  height:100%;
+  transform-origin: bottom;
+  transform: scaleY(var(--tell, 0));     /* driven by JS 0..1 */
+  background: linear-gradient(#4cc3ff,#0aa0ff);
+}
+
+/* Pulse + hold when full */
+.chip.tell-full .tell i{
+  transform: scaleY(1);
+  animation: tellPulse 280ms ease-out 1;
+}
+
+@keyframes tellPulse{
+  0%   { box-shadow: 0 0 0 0 rgba(10,160,255,.45); }
+  100% { box-shadow: 0 0 0 14px rgba(10,160,255,0); }
+}
+
+/* Optional: keep a subtle glow while held full */
+.chip.tell-full .tell{
+  box-shadow: inset 0 0 0 1px rgba(10,160,255,.25);
+}
+
+
+
+
+
+
+
+/* option B */
+/* === Global Playline under the notation === */
+/* === Playback playline (Option B) === */
+#playline{
+  position: relative;
+  height: 12px;                 /* taller so it reads */
+  margin: 8px 0 14px;
+  background: #e9eef3;          /* light track so ticks contrast */
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.06);
+}
+
+#playline .bar{
+  position:absolute; inset:0 auto 0 0;
+  width:0%;
+  background: linear-gradient(90deg,#4c8dff,#2a6bff); /* visible progress */
+  opacity:.35;                  /* translucent so ticks read on top */
+}
+
+#playline .ticks{
+  position:absolute; inset:0;
+}
+
+#playline .ticks i{
+  position:absolute; top:0; bottom:0;
+  width: 2px;                   /* visible */
+  background:#111;              /* dark so it pops on light track */
+  opacity:.9;
+}
+
+#playline .ticks i.major{
+  width: 3px;                   /* thicker “major” tick */
+  background:#ff0066;           /* hot pink = super readable */
+  opacity: 1;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.12); /* a tiny outline */
+}
+
+/* When the run finishes, dim the bar a bit so the state is obvious */
+#playline.done .bar{ opacity:.18; }
