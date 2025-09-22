@@ -24,6 +24,13 @@
   const leadInInp = document.querySelector('#leadInMs');
   const latencyInp= document.querySelector('#latencyMs');
 
+  const freeStartChk = document.querySelector('#freeStart');     // optional
+  const threshPerfectInp = document.querySelector('#threshPerfect');
+  const threshGreatInp   = document.querySelector('#threshGreat');
+  const threshGoodInp    = document.querySelector('#threshGood');
+  const threshEdgeInp    = document.querySelector('#threshEdge');
+
+
   // Sticky Replay
   let stickyReplay = false;   // user toggle
   let replayArmed  = false;   // becomes true after a playback ends if stickyReplay is on
@@ -39,12 +46,23 @@
 
 
   // grading thresholds (ms)
-  const THRESH = {
-    perfect: 30,
-    great: 60,
-    good: 100,
-    edge: 160,  // early/late window; after this we call it a miss
+  // const THRESH = {
+  //   perfect: 30,
+  //   great: 60,
+  //   good: 100,
+  //   edge: 160,  // early/late window; after this we call it a miss
+  // };
+
+  function getThresh(){
+  // fallbacks keep your previous defaults
+  return {
+    perfect: parseInt(threshPerfectInp?.value || '30', 10),
+    great:   parseInt(threshGreatInp?.value   || '60', 10),
+    good:    parseInt(threshGoodInp?.value    || '100', 10),
+    edge:    parseInt(threshEdgeInp?.value    || '160', 10),
   };
+}
+
 
   // small utilities
   function fmtDelta(ms){ const s = Math.round(ms); return (s>0?`+${s}`:`${s}`); }
@@ -126,22 +144,28 @@
     else if (mode === 'play'){ stop(); play(); }
   });
 
-  // Reset action integration (your “reset button” mapping)
-  CO.on && CO.on('reset:action', ()=>{
-    if (mode === 'record'){
-      stop();
-      requestAnimationFrame(startRecord);
-      return;
-    }
-    if (mode === 'play'){
-      stop();
-      requestAnimationFrame(play);
-      return;
-    }
-    if (replayArmed){
-      requestAnimationFrame(play);
-    }
-  });
+// Reset action integration (controller "Reset" mapping)
+// - If playing: hard stop immediately, then restart from the beginning
+// - If recording: restart recording
+// - If idle and sticky replay was armed: start from beginning
+CO.on && CO.on('reset:action', ()=>{
+  if (mode === 'record'){
+    stop();
+    requestAnimationFrame(startRecord);
+    return;
+  }
+  if (mode === 'play'){
+    // HARD reset: stop clears all RAFs, grading, tells, bars
+    stop();
+    requestAnimationFrame(play);
+    return;
+  }
+  if (replayArmed){
+    // play from start when armed
+    requestAnimationFrame(play);
+  }
+});
+
 
   // ===== Sticky Replay UI on the practice bar =====
   (function ensureStickyReplayUI(){
@@ -191,20 +215,21 @@
   // ===== Transport =====
   function stop(){
     gpPrev = [];
-    if(rafId) cancelAnimationFrame(rafId);
-    rafId=null;
+    if(rafId) cancelAnimationFrame(rafId), rafId=null;
     mode='idle';
 
-    resetPlaybackDecor();
+    resetPlaybackDecor();         // clears tells, pulses, cursor
     if (OPTION_B_ENABLED) clearPlayline();
 
     if (gpPollId) cancelAnimationFrame(gpPollId), gpPollId = null;
     preventAdds = false;
-    unsubscribeChipAdd && unsubscribeChipAdd();
+    unsubscribeChipAdd && unsubscribeChipAdd(); // lets chip:add handler go inert
+
     CO.setStatus('Stopped.');
     replayArmed = false;
     updateReplayPill(false);
   }
+
 
   function startRecord(){
     script=[];
@@ -239,6 +264,7 @@
     if(!script.length){ CO.setStatus('Nothing to play. Record first.'); return; }
     mode='play';
 
+  
     // latch Sticky Replay toggle at the moment of play
     stickyReplay = !!document.querySelector('#stickyReplay')?.checked;
     replayArmed = false;
@@ -259,21 +285,25 @@
     applyFinalSnapshot(finalChips);
     const chipEls=[...CO.overlay.querySelectorAll('.chip')];
 
-    // Shift all press times by lead-in and latency (do not mutate original)
     const shifted = presses.map(p=>({ idx:p.idx, t:p.t + leadIn + latency }));
     const steps   = shifted.map(p => ({ chipIndex: p.idx, t: p.t }));
-    // const endTime = (leadIn + latency) + totalDur; // not needed directly
 
     // Option B: build the playline/ticks only AFTER steps exist
     ensurePlayline();
+
+    let state = {
+      start: performance.now(),
+      anchorPending: !!freeStartChk?.checked
+    };
+
+    requestAnimationFrame(() => startGrading(steps, chipEls, state));
+
 
 
     if (OPTION_B_ENABLED) {
         clearPlayline();
         buildTicks(steps);
         }
-
-    let start = performance.now(); // local start to sync grading/frame
 
     // prevent notation changes during playback
     preventAdds = true;
@@ -286,7 +316,6 @@
 
     // start grading loop (sync to this playback frame)
     gpPrev = []; // clear edge detection
-    requestAnimationFrame(() => startGrading(steps, chipEls, start)); // sync clocks
 
     let nextIdx = 0;
 
@@ -300,7 +329,7 @@
     }
 
     function frame(){
-      const t = performance.now() - start;
+      const t = performance.now() - state.start;
 
       // Option B: move the global progress bar
       if (OPTION_B_ENABLED && bar) {
@@ -361,7 +390,7 @@
           chips.forEach(ch => { ch.classList.remove('playback-sweep','highlight'); ch.style.removeProperty('--pct'); });
           nextIdx = 0;
           rafId = requestAnimationFrame(() => {
-            start = performance.now();
+            state.start = performance.now();
             frame();
           });
         }else{
@@ -375,7 +404,8 @@
             CO.setStatus('Playback finished. Replay armed — press your Reset button to retry.');
           }else{
             playline?.classList.add('done');
-            setTimeout(() => stop(), THRESH.edge);
+            const { edge } = getThresh();
+            setTimeout(() => stop(), edge);
           }
         }
       }
@@ -384,96 +414,115 @@
     rafId = requestAnimationFrame(frame);
   }
 
-  // ===== Grading =====
-  function startGrading(steps, chipEls, startTimeRef){
-    let gradeIdx = 0;  // which expected step we're waiting for
-    let graded = new Array(steps.length).fill(false);
+function startGrading(steps, chipEls, state){
+  let gradeIdx = 0;
+  let graded = new Array(steps.length).fill(false);
+  const TH = getThresh();
 
-    function gradeChip(i, kind, delta){
-      const s = steps[i];
-      const chip = chipEls[s.chipIndex];
-      if(!chip) return;
-      chip.classList.remove('grade-perfect','grade-great','grade-good','grade-early','grade-late','grade-miss');
-      chip.classList.add('grade-' + kind);
+  function gradeChip(i, kind, delta){
+    const s = steps[i];
+    const chip = chipEls[s.chipIndex];
+    if(!chip) return;
+    chip.classList.remove('grade-perfect','grade-great','grade-good','grade-early','grade-late','grade-miss');
+    chip.classList.add('grade-' + kind);
 
-      // badge with delta
-      const old = chip.querySelector('.grade-badge');
-      if(old) old.remove();
-      const badge = document.createElement('div');
-      badge.className = 'grade-badge';
-      badge.textContent = isNaN(delta) ? 'miss' : fmtDelta(delta);
-      chip.appendChild(badge);
+    const old = chip.querySelector('.grade-badge');
+    if(old) old.remove();
+    const badge = document.createElement('div');
+    badge.className = 'grade-badge';
+    badge.textContent = isNaN(delta) ? 'miss' : fmtDelta(delta);
+    chip.appendChild(badge);
 
-      chip.classList.add('highlight');
-      setTimeout(()=>chip.classList.remove('highlight'), 180);
-    }
+    chip.classList.add('highlight');
+    setTimeout(()=>chip.classList.remove('highlight'), 180);
+  }
 
-    function classifyDelta(delta){
-      const ad = Math.abs(delta);
-      if(ad <= THRESH.perfect) return 'perfect';
-      if(ad <= THRESH.great)   return 'great';
-      if(ad <= THRESH.good)    return 'good';
-      return delta < 0 ? 'early' : 'late'; // within edge window; else 'miss' handled as timeout
-    }
+  function classifyDelta(delta){
+    const ad = Math.abs(delta);
+    if(ad <= TH.perfect) return 'perfect';
+    if(ad <= TH.great)   return 'great';
+    if(ad <= TH.good)    return 'good';
+    return delta < 0 ? 'early' : 'late';
+  }
 
-    // Time-based misses (don’t miss before the first window opens)
-    function checkMisses(now){
-      const firstWindowOpens = (steps[0]?.t || 0) - THRESH.edge;
-      if (now < firstWindowOpens) return;
+  function checkMisses(now){
+    const firstWindowOpens = (steps[0]?.t || 0) - TH.edge;
+    // If we're waiting for anchor, do not call misses yet
+    if (state.anchorPending) return;
+    if (now < firstWindowOpens) return;
 
-      for (let i = gradeIdx; i < steps.length; i++){
-        if (graded[i]) continue;
-        const deadline = steps[i].t + THRESH.edge;
-        if (now >= deadline){
-          gradeChip(i, 'miss', NaN);
-          graded[i] = true;
-          gradeIdx = i + 1;
-        } else {
-          break;
-        }
+    for (let i = gradeIdx; i < steps.length; i++){
+      if (graded[i]) continue;
+      const deadline = steps[i].t + TH.edge;
+      if (now >= deadline){
+        gradeChip(i, 'miss', NaN);
+        graded[i] = true;
+        gradeIdx = i + 1;
+      } else {
+        break;
       }
     }
+  }
 
-    function poll(){
-      const gps = navigator.getGamepads?.() || [];
-      const gp = Array.from(gps).find(g => g && g.connected && g.buttons) || null;
+  function poll(){
+    const gps = navigator.getGamepads?.() || [];
+    const gp = Array.from(gps).find(g => g && g.connected && g.buttons) || null;
 
-      const now = performance.now() - startTimeRef;
+    // IMPORTANT: we read "now" from the *current* startTimeRef (which can shift)
+    const now = performance.now() - state.start;
 
-      // time-based misses
-      checkMisses(now);
+    checkMisses(now);
 
-      if(gp && gp.buttons){
-        if(!gpPrev.length) gpPrev = gp.buttons.map(b => !!b.pressed);
-        for(let i=0;i<gp.buttons.length;i++){
-          if(i>=12) break; // ignore d-pad indices
-          const pressed = !!gp.buttons[i].pressed, was = !!gpPrev[i];
-          if(pressed && !was){
-            const next = gradeIdx < steps.length ? steps[gradeIdx] : null;
-            if(next && !graded[gradeIdx]){
-              const delta = now - next.t;
-              const ad = Math.abs(delta);
-              if(ad <= THRESH.edge){
-                gradeChip(gradeIdx, classifyDelta(delta), delta);
-                graded[gradeIdx] = true;
-                gradeIdx++;
-              }else{
-                gradeChip(gradeIdx, 'miss', NaN);
-                graded[gradeIdx] = true;
-                gradeIdx++;
-              }
+    if(gp && gp.buttons){
+      if(!gpPrev.length) gpPrev = gp.buttons.map(b => !!b.pressed);
+      for(let i=0;i<gp.buttons.length;i++){
+        if(i>=12) break; // ignore d-pad indices for grading presses
+        const pressed = !!gp.buttons[i].pressed, was = !!gpPrev[i];
+        if(pressed && !was){
+          // ===== ANCHOR: shift the whole timeline to this first press =====
+          if (state.anchorPending){
+            // Make this press line up with step 0 exactly.
+            // Shift "start" so that steps[0].t == (performance.now() - start)
+            const nowAbs = performance.now();
+            state.start = nowAbs - steps[0].t;   // <- shift the frame clock
+            state.anchorPending = false;
+
+            // Treat the first step as perfect on anchor
+            if (!graded[0]){
+              gradeChip(0, 'perfect', 0);
+              graded[0] = true;
+              gradeIdx = 1;
+            }
+            gpPrev[i] = pressed;
+            continue; // next poll loop
+          }
+
+          // Normal grading when not anchoring
+          const next = gradeIdx < steps.length ? steps[gradeIdx] : null;
+          if(next && !graded[gradeIdx]){
+            const delta = now - next.t;
+            const ad = Math.abs(delta);
+            if(ad <= TH.edge){
+              gradeChip(gradeIdx, classifyDelta(delta), delta);
+              graded[gradeIdx] = true;
+              gradeIdx++;
+            }else{
+              gradeChip(gradeIdx, 'miss', NaN);
+              graded[gradeIdx] = true;
+              gradeIdx++;
             }
           }
-          gpPrev[i] = pressed;
         }
-      }
-      if(mode === 'play'){
-        gpPollId = requestAnimationFrame(poll);
+        gpPrev[i] = pressed;
       }
     }
-
-    gpPollId = requestAnimationFrame(poll);
+    if(mode === 'play'){
+      gpPollId = requestAnimationFrame(poll);
+    }
   }
+
+  gpPollId = requestAnimationFrame(poll);
+}
 
   // Render all chips (final snapshot) – keeps them visible during playback
   function applyFinalSnapshot(chipsHTML){

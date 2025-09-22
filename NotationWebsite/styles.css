@@ -221,3 +221,21 @@ body.fullwidth { --overlay-width: 100vw; }
 
 /* When the run finishes, dim the bar a bit so the state is obvious */
 #playline.done .bar{ opacity:.18; }
+
+
+#practiceBar .leniency{
+  display:grid;
+  grid-template-columns: repeat(4, max-content);
+  gap:8px 12px;
+  align-items:center;
+  margin-top:6px;
+}
+#practiceBar .leniency label {
+  font-size:12px;
+}
+#practiceBar .leniency input[type="number"]{
+  width:72px;
+}
+#practiceBar .right label { display:inline-flex; align-items:center; gap:6px; }
+
+

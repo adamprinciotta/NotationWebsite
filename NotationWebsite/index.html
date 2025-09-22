@@ -13,29 +13,41 @@
 
 
   <!-- Practice Bar (shown only in Practice Mode) -->
-    <div id="practiceBar" style="display:none">
-    <div class="practice-inner">
-        <div class="left">
-        <label>Lead-in (ms)
-            <input id="leadInMs" type="number" value="1000" min="0" step="10">
-        </label>
-        <label>Latency (ms)
-            <input id="latencyMs" type="number" value="0" min="0" step="5">
-        </label>
-        <label>Fill lead-in (ms)
-            <input id="indicatorMs" type="number" value="2000" min="100" step="50">
-        </label>
-        </div>
-        <div class="right">
-        <button id="recBtnPractice"  class="btn">Record</button>
-        <button id="stopBtnPractice" class="btn">Stop</button>
-        <button id="playBtnPractice" class="btn primary">Play</button>
-        <button id="saveScriptBtnPractice" class="btn">Save</button>
-        <button id="loadScriptBtnPractice" class="btn">Load</button>
-        <input id="loadScriptInputPractice" type="file" accept="application/json" style="display:none">
-        </div>
+<!-- Practice Bar (shown only in Practice Mode) -->
+<div id="practiceBar" style="display:none">
+  <div class="practice-inner">
+    <div class="left">
+      <label>Lead-in (ms)
+        <input id="leadInMs" type="number" value="1000" min="0" step="10">
+      </label>
+      <label>Latency (ms)
+        <input id="latencyMs" type="number" value="0" min="0" step="5">
+      </label>
+      <label>Fill lead-in (ms)
+        <input id="indicatorMs" type="number" value="2000" min="100" step="50">
+      </label>
+      <!-- NEW: Grading leniency controls -->
+      <div class="leniency">
+        <span class="tiny" style="grid-column:1/-1;">Leniency (ms):</span>
+        <label>Perfect <input id="threshPerfect" type="number" value="30" min="0" step="5"></label>
+        <label>Great   <input id="threshGreat"   type="number" value="60" min="0" step="5"></label>
+        <label>Good    <input id="threshGood"    type="number" value="100" min="0" step="5"></label>
+        <label>Edge    <input id="threshEdge"    type="number" value="160" min="0" step="5"></label>
+      </div>
     </div>
+    <div class="right">
+      <!-- NEW: Free-start first hit -->
+      <label><input id="freeStart" type="checkbox" checked> Free-start first hit</label>
+      <button id="recBtnPractice"  class="btn">Record</button>
+      <button id="stopBtnPractice" class="btn">Stop</button>
+      <button id="playBtnPractice" class="btn primary">Play</button>
+      <button id="saveScriptBtnPractice" class="btn">Save</button>
+      <button id="loadScriptBtnPractice" class="btn">Load</button>
+      <input id="loadScriptInputPractice" type="file" accept="application/json" style="display:none">
     </div>
+  </div>
+</div>
+
 
   <!-- ===== SETTINGS ===== -->
   <div class="wrap">

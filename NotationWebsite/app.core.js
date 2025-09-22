@@ -503,6 +503,81 @@ function applyCssKnobs(){
 }
 
 
+// ===== Mash collapse config/state =====
+const MASH_WINDOW_MS = 350;  // time window for a rapid mash burst
+const mashState = {
+  key: null,         // normalized signature for the input (dir/motion + button)
+  firstChip: null,   // the chip element to keep/rename
+  firstTime: 0,      // timestamp of first press in the burst
+  count: 0           // how many presses in current burst
+};
+
+// normalize the HTML signature (stable key for direction/motion+button)
+function normalizeHTML(html){
+  return html.replace(/\s+/g,' ').trim();
+}
+
+// Remove the very last chip + its preceding separator (if present)
+function removeLastChip(){
+  const last = overlay.lastElementChild;
+  if(!last) return;
+  // last should be a chip; the previous sibling (if any) is the sep
+  if(last.classList && last.classList.contains('chip')){
+    // prefer using existing removeChip so it emits events/cleans sep
+    removeChip(last);
+  }else{
+    // fallback: if last isn’t a chip, just remove it
+    last.remove();
+  }
+}
+
+// Turn the kept chip into “mash …”
+function mashifyChip(chipEl){
+  if(!chipEl) return;
+  // Take the current visual contents (e.g., "<img ...> + <span>H</span>")
+  // and remove the " + " joiner so it reads like: mash [arrow] H
+  const inner = chipEl.innerHTML.replace(/\s\+\s/g, ' ');
+  chipEl.innerHTML = `<span class="mash-tag" style="font-weight:900">Mash</span> ${inner}`;
+}
+
+// Update mash state after we’ve added a chip; possibly remove recent chips
+// Returns: 'kept' | 'collapsed' | 'removed' (removed = the just-added chip got pulled)
+function updateMashAfterAdd(newHtml, newChip){
+  const key = normalizeHTML(newHtml);
+  const t   = now();
+
+  // continuing same-burst?
+  if(mashState.key === key && (t - mashState.firstTime) <= MASH_WINDOW_MS){
+    mashState.count += 1;
+    mashState.firstTime = t;
+
+    if(mashState.count === 2){
+      // show first two normally
+      return 'kept';
+    }
+    if(mashState.count === 3){
+      // collapse to 1: remove the last two chips (current + previous), then mashify the first
+      removeLastChip();  // removes current (just-added)
+      removeLastChip();  // removes previous duplicate
+      mashifyChip(mashState.firstChip);
+      rebuildBuffer();
+      return 'collapsed';
+    }
+    // 4th+ identical press within window: discard the new add silently
+    removeLastChip();    // remove the just-added one
+    rebuildBuffer();
+    return 'removed';
+  }
+
+  // new series (or outside window): start a fresh burst
+  mashState.key = key;
+  mashState.firstChip = newChip;
+  mashState.firstTime = t;
+  mashState.count = 1;
+  return 'kept';
+}
+
+
   const practiceToggle = document.querySelector('#practiceToggle');
     const practiceBar    = document.querySelector('#practiceBar');
     let practiceMode = false;
@@ -695,59 +770,129 @@ document.addEventListener('input',(e)=>{
   function isOpposite(a,b){ if(a?.includes('l') && b?.includes('r')) return true; if(a?.includes('r') && b?.includes('l')) return true; if(a?.includes('u') && b?.includes('d')) return true; if(a?.includes('d') && b?.includes('u')) return true; return false; }
 
   /* ===== Buttons & holds ===== */
-  function handleButtons(gp){ const p=profiles[activeProfile]; if(!prevButtons.length) prevButtons=gp.buttons.map(b=>b.pressed); const t=now(); const justPressed=[], justReleased=[];
-    for(let i=0;i<gp.buttons.length;i++){
-      const pressed=!!gp.buttons[i].pressed, was=!!prevButtons[i];
-      if(pressed && !was){ const last=lastButtonTime.get(i)||0; if(t-last >= (p.repeatLockout||110)){
-          if((p.resetAction||'none')===`button:${i}`){
-            clearOverlay();
-            // Broadcast a reset event (recording module will decide what to do: restart record or (re)play)
-            bus.emit('reset:action');
-            lastButtonTime.set(i,t);
-            prevButtons[i]=pressed;
-            continue;
-            }
+function handleButtons(gp){
+  const p=profiles[activeProfile];
+  if(!prevButtons.length) prevButtons=gp.buttons.map(b=>b.pressed);
+  const t=now();
+  const justPressed=[], justReleased=[];
 
+  for(let i=0;i<gp.buttons.length;i++){
+    const pressed=!!gp.buttons[i].pressed, was=!!prevButtons[i];
 
-          if(editCapture && currentSelectedChip && i<12){ replaceChipFromController(i); lastButtonTime.set(i,t); prevButtons[i]=pressed; continue; }
-          if(currentSelectedChip && i===12 && !editCapture){ addJPrefix(currentSelectedChip); lastButtonTime.set(i,t); prevButtons[i]=pressed; continue; }
-          justPressed.push(i); lastButtonTime.set(i,t);
-        } }
-      if(!pressed && was){ justReleased.push(i); }
-      prevButtons[i]=pressed;
-    }
+    if(pressed && !was){
+      const last=lastButtonTime.get(i)||0;
 
-    // Bind Reset: if we’re in capture mode, first pressed button becomes the resetAction
-        if (resetCaptureActive && justPressed.length){
-        const i = justPressed[0]; // first button pressed
-        // (Optionally ignore D-Pad indices 12–15 if you prefer)
-        const p = profiles[activeProfile];
-        p.resetAction = `button:${i}`;
-        saveProfiles();
-        renderResetLabel();
-        resetCaptureActive = false;
-        setStatus(`Reset bound to controller button #${i}.`);
-        // consume this press (don’t add a chip for it)
-        justPressed.shift();
+      if(t-last >= (p.repeatLockout||110)){
+
+        // Controller-bound reset (clears + broadcasts)
+        if((p.resetAction||'none')===`button:${i}`){
+          clearOverlay();
+          bus.emit('reset:action');
+          lastButtonTime.set(i,t);
+          prevButtons[i]=pressed;
+          continue;
         }
 
+        // In-chip capture mode: replace selected chip and continue
+        if(editCapture && currentSelectedChip && i<12){
+          replaceChipFromController(i);
+          lastButtonTime.set(i,t);
+          prevButtons[i]=pressed;
+          continue;
+        }
 
-    for(const i of justPressed){ if(i>=12&&i<=15) continue; if(editCapture && currentSelectedChip) continue; let html=null;
-      const age=t-(lastCharged.at||0); const nowDir=snapshotDirection()||'';
-      if(lastCharged.tok && age <= (p.chargeWindow||180) && isOpposite(lastCharged.tok, nowDir)){
-        const first=dirToImg(lastCharged.tok)||lastCharged.tok.toUpperCase();
-        const second=dirToImg(nowDir)||nowDir.toUpperCase();
-        html = `${first} ${second} ${buttonHTML(i)}`; lastCharged.tok=null;
+        // Quick “j.” prefix via D-pad UP button index (12) when editing
+        if(currentSelectedChip && i===12 && !editCapture){
+          addJPrefix(currentSelectedChip);
+          lastButtonTime.set(i,t);
+          prevButtons[i]=pressed;
+          continue;
+        }
+
+        justPressed.push(i);
+        lastButtonTime.set(i,t);
       }
-      if(!html){ const motionHTML=detectMotionForButton(); if(motionHTML){ html = `${motionHTML} ${buttonHTML(i)}`; } }
-      if(!html){ const dirTok=snapshotDirection(); if(dirTok){ const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase(); html = `${dirHTML} + ${buttonHTML(i)}`; } else { html = buttonHTML(i); } }
-      const chip = addChipElHTML(html, (profiles[activeProfile].buttonBgColors[i]||'#f5f5f5'));
-      activeButtonChips.set(i,{chip,label:(profiles[activeProfile].buttonLabels[i]||`#${i}`),pressAt:t,held:false});
-      const holdId=setTimeout(()=>{ const obj=activeButtonChips.get(i); if(!obj) return; obj.held=true; mutateLabelText(obj.chip, obj.label, `[${obj.label}]`); rebuildBuffer(); }, p.holdMs||250); holdTimers.set(i,holdId);
     }
 
-    for(const i of justReleased){ const obj=activeButtonChips.get(i); const id=holdTimers.get(i); if(id) clearTimeout(id); holdTimers.delete(i); if(obj){ if(obj.held){ addChipElHTML(buttonHTML(i, `]${obj.label}[`), (profiles[activeProfile].buttonBgColors[i]||'#f5f5f5')); } activeButtonChips.delete(i); rebuildBuffer(); } }
+    if(!pressed && was){ justReleased.push(i); }
+    prevButtons[i]=pressed;
   }
+
+  // ===== Handle new presses =====
+  for(const i of justPressed){
+    // Ignore D-pad as “buttons” for chip adds (12–15)
+    if(i>=12 && i<=15) continue;
+    if(editCapture && currentSelectedChip) continue;
+
+    // Build the chip HTML (charge -> motion -> dir + button -> button)
+    let html=null;
+    const age = t-(lastCharged.at||0);
+    const nowDir = snapshotDirection()||'';
+    if(lastCharged.tok && age <= (p.chargeWindow||180) && isOpposite(lastCharged.tok, nowDir)){
+      const first = dirToImg(lastCharged.tok)||lastCharged.tok.toUpperCase();
+      const second= dirToImg(nowDir)||nowDir.toUpperCase();
+      html = `${first} ${second} ${buttonHTML(i)}`;
+      lastCharged.tok=null;
+    }
+    if(!html){
+      const motionHTML = detectMotionForButton();
+      if(motionHTML){ html = `${motionHTML} ${buttonHTML(i)}`; }
+    }
+    if(!html){
+      const dirTok = snapshotDirection();
+      if(dirTok){
+        const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase();
+        html = `${dirHTML} + ${buttonHTML(i)}`;
+      }else{
+        html = buttonHTML(i);
+      }
+    }
+
+    // Add the chip to the overlay
+    const chip = addChipElHTML(html, (profiles[activeProfile].buttonBgColors[i]||'#f5f5f5'));
+
+    // ===== Mash collapse pass (may delete the chip we just added) =====
+    const mashResult = updateMashAfterAdd(html, chip);
+    if(mashResult === 'removed' || mashResult === 'collapsed'){
+      // If removed/collapsed, do not track hold state for this press
+      continue;
+    }
+
+    // Normal hold tracking for this press
+    activeButtonChips.set(i,{
+      chip,
+      label:(profiles[activeProfile].buttonLabels[i]||`#${i}`),
+      pressAt:t,
+      held:false
+    });
+
+    const holdId=setTimeout(()=>{
+      const obj=activeButtonChips.get(i);
+      if(!obj) return;
+      obj.held=true;
+      mutateLabelText(obj.chip, obj.label, `[${obj.label}]`);
+      rebuildBuffer();
+    }, p.holdMs||250);
+    holdTimers.set(i,holdId);
+  }
+
+  // ===== Handle releases (close holds, emit ]L[ chip) =====
+  for(const i of justReleased){
+    const obj=activeButtonChips.get(i);
+    const id=holdTimers.get(i);
+    if(id) clearTimeout(id);
+    holdTimers.delete(i);
+
+    if(obj){
+      if(obj.held){
+        addChipElHTML(buttonHTML(i, `]${obj.label}[`), (profiles[activeProfile].buttonBgColors[i]||'#f5f5f5'));
+      }
+      activeButtonChips.delete(i);
+      rebuildBuffer();
+    }
+  }
+}
+
 
   function buttonHTML(btnIndex, override){ const p=profiles[activeProfile]; const text = override ?? (p.buttonLabels[btnIndex] || `#${btnIndex}`);
     const color = useGlobalColors?.checked ? getComputedStyle(document.documentElement).getPropertyValue('--chip-text').trim() : (p.buttonColors[btnIndex] || '#000000');
