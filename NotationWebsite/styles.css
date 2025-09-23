@@ -239,3 +239,17 @@ body.fullwidth { --overlay-width: 100vw; }
 #practiceBar .right label { display:inline-flex; align-items:center; gap:6px; }
 
 
+/* styles.css additions */
+.chip.selected{
+  box-shadow:0 0 0 2px #fff8, 0 0 0 4px rgba(58,76,255,.55);
+  border-color:#fff;
+}
+
+
+/* Overlay should never look/behave like a text field */
+#overlay {
+  -webkit-user-select: none;
+  user-select: none;
+  caret-color: transparent;  /* hides the blinking bar if some UA still tries */
+}
+#overlay:focus { outline: none; }
