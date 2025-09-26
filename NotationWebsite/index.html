@@ -8,7 +8,19 @@
 </head>
 <body>
   <!-- ===== OVERLAY (OBS captures this) ===== -->
-  <div id="overlayWrap"><div id="overlay" aria-live="polite" contenteditable="false" tabindex="-1"></div></div>
+  <div id="overlayWrap">
+    <div id="overlay" aria-live="polite" contenteditable="false" tabindex="-1"></div>
+    <!-- Combo Branching Controls -->
+    <div id="comboBranchingControls" class="combo-branching-controls">
+      <button id="branchModeToggle" class="btn btn-secondary">Branch Mode: Off</button>
+      <button id="saveNodeBtn" class="btn">Save Node</button>
+      <button id="branchNodeBtn" class="btn">Branch from Here</button>
+      <button id="deleteNodeBtn" class="btn btn-danger">Delete Node</button>
+      <select id="nodeSelector" class="node-selector">
+        <option value="">No nodes saved</option>
+      </select>
+    </div>
+  </div>
   <div id="playline"><div class="bar"></div><div class="ticks"></div></div>
 
 
@@ -65,10 +77,41 @@
           <div class="tiny">E: toggle settings · C: clear overlay</div>
         </div>
         <div class="row row-tight">
+          <button id="shareBtn" class="btn">Share</button>
+          <button id="testBtn1" class="btn">Test 1</button>
+          <button id="testBtn2" class="btn">Test 2</button>
+        </div>
+        <div class="row row-tight">
           <input id="importInput" type="file" accept="application/json" style="display:none" />
           <button id="exportBtn" class="btn">Export</button>
           <button id="importBtn" class="btn">Import</button>
           <button id="makeObsUrl" class="btn">Copy OBS URL</button>
+        </div>
+
+        <!-- Metadata Modal Trigger -->
+        <div class="row row-tight" style="margin-top:8px">
+          <button id="metadataBtn" class="btn">Edit Metadata</button>
+        </div>
+      </div>
+
+      <!-- Metadata Modal -->
+      <div id="metadataModal" class="modal" style="display:none">
+        <div class="modal-content">
+          <h3>Combo Metadata</h3>
+          <div class="modal-form">
+            <label>Combo Name <input id="metaName" type="text" placeholder="e.g., BnB Combo"></label>
+            <label>Game <input id="metaGame" type="text" placeholder="e.g., Street Fighter 6"></label>
+            <label>Character(s) <input id="metaCharacters" type="text" placeholder="e.g., Ryu, Ken"></label>
+            <label>Author <input id="metaAuthor" type="text" placeholder="Your name"></label>
+            <label>Date <input id="metaDate" type="date"></label>
+            <label>Game Version/Patch <input id="metaPatch" type="text" placeholder="e.g., Version 1.10"></label>
+            <label>Tags <input id="metaTags" type="text" placeholder="combo, punish, corner"></label>
+            <label>Description <textarea id="metaDescription" placeholder="Describe this combo..."></textarea></label>
+          </div>
+          <div class="modal-buttons">
+            <button id="metaCancel" class="btn">Cancel</button>
+            <button id="metaSave" class="btn primary">Save</button>
+          </div>
         </div>
       </div>
 
@@ -83,6 +126,10 @@
           <button id="exportPngBtn" class="btn">Export PNG</button>
           <button id="toggleMode" class="btn primary">Mode: Live</button>
           <button id="practiceToggle" class="btn">Practice Mode: Off (P)</button>
+          
+          <!-- Undo/Redo buttons -->
+          <button id="undoBtn" class="btn" title="Undo (Ctrl+Z)" disabled>Undo</button>
+          <button id="redoBtn" class="btn" title="Redo (Ctrl+Y)" disabled>Redo</button>
         </div>
 
         <!-- Playback/record controls -->

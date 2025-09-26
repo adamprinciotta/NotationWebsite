@@ -1,5 +1,4 @@
-﻿
-/* Combo Overlay – Core (v13.7)
+﻿/* Combo Overlay – Core (v13.7)
    Responsibilities:
    - UI wiring (profiles, colors, PNG export, OBS URL)
    - Overlay chip add/remove/edit + popover
@@ -11,9 +10,10 @@
            'status' (msg), 'overlay:clear'
 */
 (function(){
+  console.log('App core script loaded - console.log is working'); // Test console
   const $ = (s)=>document.querySelector(s);
   const overlay = $('#overlay');
-  // Ensure the overlay can’t host a caret or gain focus when it’s empty
+  // Ensure the overlay can't host a caret or gain focus when it's empty
   overlay.setAttribute('contenteditable', 'false'); // belt-and-suspenders
   overlay.setAttribute('tabindex', '-1');           // it shouldn't be keyboard-focusable
 
@@ -33,6 +33,148 @@
     on(evt,fn){ const arr=this.listeners.get(evt)||[]; arr.push(fn); this.listeners.set(evt,arr); },
     emit(evt,...args){ const arr=this.listeners.get(evt); if(arr) for(const f of arr){ try{ f(...args);}catch(e){ console.warn('[bus]',e); } } }
   };
+
+  /* ===== Combo Branching Data Model ===== */
+  let comboGraph = {
+    nodes: [],
+    edges: [],
+    rootId: null,
+    activeId: null
+  };
+
+  function createComboNode(label, chipsHTML) {
+    return {
+      id: 'node_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+      label: label,
+      chipsHTML: chipsHTML || []
+    };
+  }
+
+  function saveCurrentAsNode(label) {
+    const chips = [...overlay.querySelectorAll('.chip')];
+    const chipsHTML = chips.map(chip => chip.innerHTML);
+    const node = createComboNode(label, chipsHTML);
+    
+    comboGraph.nodes.push(node);
+    
+    if (!comboGraph.rootId) {
+      comboGraph.rootId = node.id;
+    }
+    
+    comboGraph.activeId = node.id;
+    updateNodeSelector();
+    setStatus(`Saved node: ${label}`);
+    return node;
+  }
+
+  function branchFromActiveNode() {
+    if (!comboGraph.activeId) {
+      setStatus('No active node to branch from');
+      return null;
+    }
+    
+    const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.activeId);
+    if (!activeNode) {
+      setStatus('Active node not found');
+      return null;
+    }
+    
+    const branchLabel = activeNode.label + ' (branch)';
+    const branchNode = createComboNode(branchLabel, [...activeNode.chipsHTML]);
+    
+    comboGraph.nodes.push(branchNode);
+    comboGraph.edges.push({ from: comboGraph.activeId, to: branchNode.id });
+    comboGraph.activeId = branchNode.id;
+    
+    updateNodeSelector();
+    setStatus(`Branched from ${activeNode.label}`);
+    return branchNode;
+  }
+
+  function switchToNode(nodeId) {
+    const node = comboGraph.nodes.find(n => n.id === nodeId);
+    if (!node) {
+      setStatus('Node not found');
+      return;
+    }
+    
+    // Save current state before switching
+    if (comboGraph.activeId) {
+      const currentChips = [...overlay.querySelectorAll('.chip')];
+      const currentChipsHTML = currentChips.map(chip => chip.innerHTML);
+      const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.activeId);
+      if (activeNode) {
+        activeNode.chipsHTML = currentChipsHTML;
+        // Push a snapshot for the node we're leaving
+        pushHistory(`Switch from ${activeNode.label}`);
+      }
+    }
+    
+    comboGraph.activeId = nodeId;
+    updateNodeSelector();
+    
+    // Restore the node's chips
+    restoreNodeChips(node);
+    
+    // Push a snapshot for the node we're switching to
+    pushHistory(`Switch to ${node.label}`);
+    setStatus(`Switched to: ${node.label}`);
+  }
+
+  function restoreNodeChips(node) {
+    // Suppress history during restoration
+    const wasSuppressed = suppressHistory;
+    suppressHistory = true;
+    
+    // Clear current overlay
+    overlay.innerHTML = '';
+    buffer.length = 0;
+    bus.emit('overlay:clear');
+    
+    // Restore chips from node
+    node.chipsHTML.forEach((html, i) => {
+      if (i > 0) {
+        addSeparator();
+      }
+      
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.innerHTML = html;
+      chip.tabIndex = 0;
+      chip.addEventListener('click', (ev)=>{ selectChip(chip); openPopover(chip); ev.stopPropagation(); });
+      chip.addEventListener('dblclick', (ev)=>{ selectChip(chip); openPopover(chip, true); ev.stopPropagation(); });
+      overlay.appendChild(chip);
+    });
+    
+    rebuildBuffer();
+    
+    // Restore previous suppress state
+    suppressHistory = wasSuppressed;
+  }
+
+  function updateNodeSelector() {
+    const selector = $('#nodeSelector');
+    if (!selector) return;
+    
+    selector.innerHTML = '';
+    
+    if (comboGraph.nodes.length === 0) {
+      selector.innerHTML = '<option value="">No nodes saved</option>';
+      selector.disabled = true;
+      return;
+    }
+    
+    selector.disabled = false;
+    comboGraph.nodes.forEach(node => {
+      const option = document.createElement('option');
+      option.value = node.id;
+      option.textContent = node.label;
+      if (node.id === comboGraph.activeId) {
+        option.selected = true;
+      }
+      selector.appendChild(option);
+    });
+  }
   function setStatus(msg){ if(statusEl) statusEl.textContent = msg; console.log('[overlay]', msg); bus.emit('status', msg); }
 
   /* ===== Profiles / persistence ===== */
@@ -48,8 +190,8 @@
   function saveActive(){localStorage.setItem(LS_ACTIVE, String(activeProfile));}
   let profiles=loadProfiles(); let activeProfile=loadActive();
   
-  /* ===== Undo/Redo Manager ===== */
-  const history = { past:[], future:[], max:200 };
+  /* ===== Undo/Redo Manager (Node-aware) ===== */
+  const nodeHistory = new Map(); // nodeId -> { past:[], future:[], max:200 }
   let suppressHistory = false;
   let historyDebounceTimer = null;
 
@@ -107,7 +249,26 @@
     suppressHistory = wasSuppressed;
   }
 
+  function getCurrentNodeHistory() {
+    if (!comboGraph.activeId) {
+      // Create a default history for when no node is active
+      const defaultId = 'default';
+      if (!nodeHistory.has(defaultId)) {
+        nodeHistory.set(defaultId, { past: [], future: [], max: 200 });
+      }
+      return nodeHistory.get(defaultId);
+    }
+    
+    if (!nodeHistory.has(comboGraph.activeId)) {
+      nodeHistory.set(comboGraph.activeId, { past: [], future: [], max: 200 });
+    }
+    return nodeHistory.get(comboGraph.activeId);
+  }
+
   function pushHistory(label){
+    // Disable old history system to prevent conflicts with new discrete operation system
+    return;
+    
     if(suppressHistory) return;
     
     // Clear debounce timer
@@ -119,6 +280,9 @@
     historyDebounceTimer = setTimeout(() => {
       const snapshot = snapshotOverlay();
       snapshot.label = label;
+      snapshot.nodeId = comboGraph.activeId;
+      
+      const history = getCurrentNodeHistory();
       
       // Add to past, clear future
       history.past.push(snapshot);
@@ -129,16 +293,18 @@
         history.past.shift();
       }
       
-      console.log(`[undo] Pushed: ${label}`);
+      console.log(`[undo] Pushed: ${label} (node: ${comboGraph.activeId || 'default'})`);
     }, 250);
   }
 
   function undo(){
+    const history = getCurrentNodeHistory();
     if(history.past.length === 0) return;
     
     // Move current state to future
     const current = snapshotOverlay();
     current.label = 'Current';
+    current.nodeId = comboGraph.activeId;
     history.future.unshift(current);
     
     // Restore previous state
@@ -146,15 +312,17 @@
     restoreOverlay(previous);
     
     setStatus(`Undid: ${previous.label || 'Unknown'}`);
-    console.log(`[undo] Undid: ${previous.label || 'Unknown'}`);
+    console.log(`[undo] Undid: ${previous.label || 'Unknown'} (node: ${comboGraph.activeId || 'default'})`);
   }
 
   function redo(){
+    const history = getCurrentNodeHistory();
     if(history.future.length === 0) return;
     
     // Move current state to past
     const current = snapshotOverlay();
     current.label = 'Current';
+    current.nodeId = comboGraph.activeId;
     history.past.push(current);
     
     // Restore future state
@@ -162,7 +330,7 @@
     restoreOverlay(next);
     
     setStatus(`Redid: ${next.label || 'Unknown'}`);
-    console.log(`[undo] Redid: ${next.label || 'Unknown'}`);
+    console.log(`[undo] Redid: ${next.label || 'Unknown'} (node: ${comboGraph.activeId || 'default'})`);
   }
   
   /* ===== Context Menu for Chip Insertion ===== */
@@ -454,7 +622,15 @@
     if (!isPlaceholder) {
       rebuildBuffer();
       bus.emit('chip:add', chip);
-      pushHistory('Insert chip');
+      
+      // Use discrete history system instead of old pushHistory
+      const chips = getChipList();
+      const chipIndex = chips.indexOf(chip);
+      history.push({
+        type: 'chip:add',
+        index: chipIndex,
+        html: html
+      });
     }
     
     return chip;
@@ -586,7 +762,7 @@
 
 
     /* ===== Multi-select / marquee selection ===== */
-let currentSelectedChip = null;                 // keep existing single “primary” for compatibility
+let currentSelectedChip = null;                 // keep existing single "primary" for compatibility
 const selectedChips = new Set();                // multi-select set
 let marquee = null;                             // DOM box
 let marqueeActive = false;
@@ -686,7 +862,7 @@ function startPresetBinding(presetName){
   presetBind.i      = 0;
   presetBind.queue  = Array.from(preset.labels || []);
   const first = presetBind.queue[0];
-  const msg = `Binding “${presetName}”: Press the controller button for “${first}”. (Esc to cancel)`;
+  const msg = `Binding "${presetName}": Press the controller button for "${first}". (Esc to cancel, Space to skip)`;
   setStatus(msg);
   showBindingBanner(msg);
 }
@@ -704,7 +880,7 @@ function cancelPresetBinding(){
 function stepPresetBindingAssigned(){
   presetBind.i++;
   if(presetBind.i >= presetBind.queue.length){
-    const done = `Preset “${presetBind.name}” bound to controller buttons.`;
+    const done = `Preset "${presetBind.name}" bound to controller buttons.`;
     setStatus(done);
     hideBindingBanner();
     presetBind.active = false;
@@ -712,7 +888,7 @@ function stepPresetBindingAssigned(){
     presetBind.queue  = [];
     presetBind.i      = 0;
   }else{
-    const next = `Now press the button for “${presetBind.queue[presetBind.i]}”. (Esc to cancel)`;
+    const next = `Now press the button for "${presetBind.queue[presetBind.i]}". (Esc to cancel, Space to skip)`;
     setStatus(next);
     showBindingBanner(next);
   }
@@ -944,12 +1120,12 @@ function removeLastChip(){
     // prefer using existing removeChip so it emits events/cleans sep
     removeChip(last);
   }else{
-    // fallback: if last isn’t a chip, just remove it
+    // fallback: if last isn't a chip, just remove it
     last.remove();
   }
 }
 
-// Turn the kept chip into “mash …”
+// Turn the kept chip into "mash ..."
 function mashifyChip(chipEl){
   if(!chipEl) return;
   // Take the current visual contents (e.g., "<img ...> + <span>H</span>")
@@ -958,7 +1134,7 @@ function mashifyChip(chipEl){
   chipEl.innerHTML = `<span class="mash-tag" style="font-weight:900">Mash</span> ${inner}`;
 }
 
-// Update mash state after we’ve added a chip; possibly remove recent chips
+// Update mash state after we've added a chip; possibly remove recent chips
 // Returns: 'kept' | 'collapsed' | 'removed' (removed = the just-added chip got pulled)
 function updateMashAfterAdd(newHtml, newChip){
   const key = normalizeHTML(newHtml);
@@ -1058,9 +1234,72 @@ function renderResetLabel(){
   delProfileBtn?.addEventListener('click',()=>{ if(profiles.length<=1) return; profiles.splice(activeProfile,1); activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI();});
   saveProfileBtn?.addEventListener('click',()=>{ const p=profiles[activeProfile]; p.name=profileName?.value.trim()||`Profile ${activeProfile+1}`; p.facing=facingSel?.value||p.facing; p.resetAction=resetSel?.value||p.resetAction; p.separator=separatorInp.value||'>'; p.deadzone=parseFloat($('#deadzone')?.value)||p.deadzone; p.chordWindow=parseInt($('#chordWindow')?.value)||p.chordWindow; p.repeatLockout=parseInt($('#repeatLockout')?.value)||p.repeatLockout; p.holdMs=parseInt($('#holdMs')?.value)||p.holdMs; p.motionWindow=parseInt($('#motionWindow')?.value)||p.motionWindow; p.motionCoupleMs=parseInt($('#motionCoupleMs')?.value)||p.motionCoupleMs; p.chargeFrames=parseInt($('#chargeFrames')?.value)||p.chargeFrames; p.chargeWindow=parseInt($('#chargeWindow')?.value)||p.chargeWindow; p.mashWindowMs=parseInt($('#mashWindowMs')?.value)||350; saveProfiles(); refreshProfileUI();});
 
-  exportBtn?.addEventListener('click',()=>{const blob=new Blob([JSON.stringify(profiles,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='gamepad_profiles.json'; a.click(); URL.revokeObjectURL(url);});
+  exportBtn?.addEventListener('click',()=>{
+    const exportData = {
+      version: "1.0",
+      meta: comboMetadata,
+      graph: comboGraph,
+      profile: profiles[activeProfile]
+    };
+    const blob=new Blob([JSON.stringify(exportData,null,2)],{type:'application/json'}); 
+    const url=URL.createObjectURL(blob); 
+    const a=document.createElement('a'); 
+    a.href=url; 
+    a.download='combo_data.json'; 
+    a.click(); 
+    URL.revokeObjectURL(url);
+    setStatus('Exported combo data with metadata');
+  });
   importBtn?.addEventListener('click',()=>importInput?.click());
-  importInput?.addEventListener('change',async(e)=>{const f=e.target.files?.[0]; if(!f) return; const text=await f.text(); try{ const arr=JSON.parse(text); if(Array.isArray(arr)&&arr.length){ profiles=arr; activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI(); } }catch(err){ console.warn('Import error', err); }});
+  importInput?.addEventListener('change',async(e)=>{const f=e.target.files?.[0]; if(!f) return; const text=await f.text(); try{ 
+    const data=JSON.parse(text); 
+    if(Array.isArray(data)){
+      // Legacy format - just profiles
+      profiles=data; 
+      activeProfile=0; 
+      saveProfiles(); 
+      saveActive(); 
+      refreshProfileUI();
+      setStatus('Imported profiles (legacy format)');
+    } else if(data.version === "1.0" && data.meta && data.graph && data.profile){
+      // New format - metadata + graph + profile
+      comboMetadata = data.meta;
+      comboGraph = data.graph;
+      
+      // Replace current profile with imported one
+      profiles[activeProfile] = data.profile;
+      saveProfiles();
+      refreshProfileUI();
+      updateNodeSelector();
+      
+      // Restore active node if it exists
+      if(comboGraph.activeId){
+        const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.activeId);
+        if(activeNode){
+          restoreNodeChips(activeNode);
+        }
+      }
+      
+      setStatus('Imported combo data with metadata');
+    } else if(data.profiles && Array.isArray(data.profiles)){
+      // Intermediate format - profiles + combo graph
+      profiles=data.profiles; 
+      activeProfile=0; 
+      saveProfiles(); 
+      saveActive(); 
+      refreshProfileUI();
+      
+      if(data.comboGraph){
+        comboGraph = data.comboGraph;
+        updateNodeSelector();
+        setStatus('Imported profiles and combo graph');
+      } else {
+        setStatus('Imported profiles (no combo graph)');
+      }
+    } else {
+      setStatus('Invalid file format');
+    }
+  }catch(err){ console.warn('Import error', err); setStatus('Import failed'); }});
   makeObsUrlBtn?.addEventListener('click',()=>{ try{ const b64=btoa(JSON.stringify(profiles)); const here=location.href.split('?')[0]; const url=`${here}?obs=1&config=${b64}`; navigator.clipboard?.writeText(url); setStatus('Copied OBS URL with embedded config'); }catch{ setStatus('Could not encode config (too large?)'); }});
 
   // Live CSS knobs + global override
@@ -1115,14 +1354,59 @@ document.addEventListener('input',(e)=>{
     c.addEventListener('dblclick', (ev)=>{ selectChip(c); openPopover(c, true); ev.stopPropagation(); });
     overlay.appendChild(c); overlay.scrollLeft=overlay.scrollWidth; rebuildBuffer();
     bus.emit('chip:add', c);
-    pushHistory('Add chip');
+    
+    // Push discrete operation to history - get index after adding to DOM
+    const chips = getChipList();
+    const index = chips.indexOf(c);
+    history.push({
+      type: 'chip:add',
+      index: index,
+      html: html,
+      perButtonBg: perButtonBg
+    });
+    
     return c;
   }
 
-  function clearOverlay(){ overlay.innerHTML=''; buffer.length=0; activeButtonChips.clear(); lastCharged={tok:null,at:0}; closePopover(); currentSelectedChip=null; editCapture=false; bus.emit('overlay:clear'); pushHistory('Clear overlay'); }
+  function clearOverlay(){ 
+    // Capture chip HTMLs before clearing
+    const chips = getChipList();
+    const chipHTMLs = chips.map(chip => chip.innerHTML);
+    
+    overlay.innerHTML=''; 
+    buffer.length=0; 
+    activeButtonChips.clear(); 
+    lastCharged={tok:null,at:0}; 
+    closePopover(); 
+    currentSelectedChip=null; 
+    editCapture=false; 
+    bus.emit('overlay:clear');
+    
+    // Push discrete operation to history
+    history.push({
+      type: 'overlay:clear',
+      chips: chipHTMLs
+    });
+  }
   $('#clearBtn')?.addEventListener('click', clearOverlay);
   $('#copyBtn')?.addEventListener('click', ()=>{ const txt=buffer.join(currentSeparator().trim()); navigator.clipboard?.writeText(txt); setStatus('Copied text.'); });
   let modeLive=true; $('#toggleMode')?.addEventListener('click',()=>{ modeLive=!modeLive; $('#toggleMode').textContent='Mode: '+(modeLive?'Live':'Record'); setStatus('Mode toggled.'); });
+
+  // Combo Branching UI Event Handlers
+  $('#saveNodeBtn')?.addEventListener('click', () => {
+    const label = prompt('Enter node label:', `Combo ${new Date().toLocaleTimeString()}`);
+    if (label && label.trim()) {
+      saveCurrentAsNode(label.trim());
+    }
+  });
+  $('#branchNodeBtn')?.addEventListener('click', branchFromActiveNode);
+  $('#deleteNodeBtn')?.addEventListener('click', deleteActiveNode);
+  $('#nodeSelector')?.addEventListener('change', (e) => {
+    const nodeId = e.target.value;
+    if (nodeId) {
+      switchToNode(nodeId);
+    }
+  });
 
   // PNG Copy/Export
   async function overlayToCanvas(){
@@ -1235,6 +1519,7 @@ function handleButtons(gp){
           prevButtons[i]=pressed;
           continue;
         }
+        
         const label = presetBind.queue[presetBind.i];
         if(typeof label === 'string'){
           p.buttonLabels[i] = label;
@@ -1247,13 +1532,37 @@ function handleButtons(gp){
       }
       // ======================================================
 
+      // ===== Reset Button Binding =====
+      if(resetBindingActive){
+        if(i>=12 && i<=15){
+          // Ignore D-pad buttons for reset binding
+          setStatus('D-pad buttons cannot be used for Reset. Press any other button.');
+          prevButtons[i]=pressed;
+          continue;
+        }
+        setResetButton(i);
+        prevButtons[i]=pressed;
+        continue; // do not create a chip for this press
+      }
+      // ======================================================
+
       const last=lastButtonTime.get(i)||0;
 
       if(t-last >= (p.repeatLockout||110)){
 
         // Controller-bound reset (clears + broadcasts)
         if((p.resetAction||'none')===`button:${i}`){
-          clearOverlay();
+          if (branchModeActive && comboGraph.activeId) {
+            // If in branch mode and in a node/branch, restore the node's saved state instead of clearing
+            const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.activeId);
+            if (activeNode) {
+              restoreNodeChips(activeNode);
+              pushHistory('Reset to node state');
+            }
+          } else {
+            // Standard behavior when not in branch mode or no active node
+            clearOverlay();
+          }
           bus.emit('reset:action');
           lastButtonTime.set(i,t);
           prevButtons[i]=pressed;
@@ -1276,7 +1585,7 @@ function handleButtons(gp){
           continue;
         }
 
-        // Quick “j.” prefix via D-pad UP button index (12) when editing
+        // Quick "j." prefix via D-pad UP button index (12) when editing
         if(currentSelectedChip && i===12 && !editCapture){
           addJPrefix(currentSelectedChip);
           lastButtonTime.set(i,t);
@@ -1295,7 +1604,7 @@ function handleButtons(gp){
 
   // ===== Handle new presses =====
   for(const i of justPressed){
-    // Ignore D-pad as “buttons” for chip adds (12–15)
+    // Ignore D-pad as "buttons" for chip adds (12–15)
     if(i>=12 && i<=15) continue;
     if(editCapture && currentSelectedChip) continue;
 
@@ -1376,7 +1685,41 @@ function handleButtons(gp){
 
   function addJPrefix(chip){ const lastSpan=chip.querySelector('span:last-of-type'); if(!lastSpan) return; const cur=lastSpan.textContent.trim(); if(cur.toLowerCase().startsWith('j.')) return; lastSpan.textContent='j.'+cur; rebuildBuffer(); }
 
-  function replaceChipFromController(btnIndex){ if(!currentSelectedChip) return; const dirTok = editCapture ? captureDirTok : (snapshotDirection()||'n'); const motionHTML = detectMotionForButton(); const p=profiles[activeProfile]; let finalLabel=(p.buttonLabels[btnIndex]||`#${btnIndex}`); if(dirTok==='u' && !/^j\./i.test(finalLabel)) finalLabel='j.'+finalLabel; let html; if(motionHTML){ html = `${motionHTML} ${buttonHTML(btnIndex, finalLabel)}`; } else if(dirTok && dirTok!=='n'){ const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase(); html = `${dirHTML} + ${buttonHTML(btnIndex, finalLabel)}`; } else { html = buttonHTML(btnIndex, finalLabel); } currentSelectedChip.innerHTML=html; rebuildBuffer(); closePopover(); bus.emit('chip:replace', currentSelectedChip); pushHistory('Replace chip'); }
+  function replaceChipFromController(btnIndex){ 
+    if(!currentSelectedChip) return; 
+    
+    // Capture HTML before replacement
+    const beforeHTML = currentSelectedChip.innerHTML;
+    
+    const dirTok = editCapture ? captureDirTok : (snapshotDirection()||'n'); 
+    const motionHTML = detectMotionForButton(); 
+    const p=profiles[activeProfile]; 
+    let finalLabel=(p.buttonLabels[btnIndex]||`#${btnIndex}`); 
+    if(dirTok==='u' && !/^j\./i.test(finalLabel)) finalLabel='j.'+finalLabel; 
+    let html; 
+    if(motionHTML){ 
+      html = `${motionHTML} ${buttonHTML(btnIndex, finalLabel)}`; 
+    } else if(dirTok && dirTok!=='n'){ 
+      const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase(); 
+      html = `${dirHTML} + ${buttonHTML(btnIndex, finalLabel)}`; 
+    } else { 
+      html = buttonHTML(btnIndex, finalLabel); 
+    } 
+    currentSelectedChip.innerHTML=html; 
+    rebuildBuffer(); 
+    closePopover(); 
+    bus.emit('chip:replace', currentSelectedChip);
+    
+    // Push discrete operation to history
+    const chips = getChipList();
+    const index = chips.indexOf(currentSelectedChip);
+    history.push({
+      type: 'chip:replace',
+      index: index,
+      beforeHTML: beforeHTML,
+      afterHTML: html
+    });
+  }
 
   function mutateLabelText(chipEl, oldText, newText){ const spans = chipEl.querySelectorAll('span'); for(let i = spans.length - 1; i >= 0; i--){ const sp = spans[i]; if(sp.textContent.trim() === oldText){ sp.textContent = newText; return; } } chipEl.innerHTML = chipEl.innerHTML.replace(new RegExp(escapeRegExp(oldText) + '(?!.*' + escapeRegExp(oldText) + ')'), ' ' + newText + ' '); }
   function escapeRegExp(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -1616,15 +1959,53 @@ function openPopover(target, startInEdit=false){
     const clearDirBtn=$('#clearDirBtn'), clearMotionBtn=$('#clearMotionBtn');
 
     if(startInEdit){ renameInput?.blur(); window.ComboOverlay?.ctrl?.startCapture?.(); } else { renameInput?.focus(); }
+    
+    // Debounce typing operations
+    let typingDebounceTimer = null;
+    let originalText = curTxt;
+    
+    renameInput?.addEventListener('input', () => {
+      if (typingDebounceTimer) clearTimeout(typingDebounceTimer);
+      typingDebounceTimer = setTimeout(() => {
+        // Store intermediate state for debounced typing
+        const currentText = renameInput?.value.trim();
+        if (currentText && currentText !== originalText) {
+          // This will be handled on blur/apply
+        }
+      }, 300);
+    });
+    
     applyBtn?.addEventListener('click', ()=>{
       const newTxt = renameInput?.value.trim();
       if(newTxt && lastSpan && newTxt!==curTxt){
         lastSpan.textContent = newTxt;
         window.ComboOverlay?.rebuildBuffer?.();
+        
+        // Push discrete operation to history (debounced typing)
+        const chips = getChipList();
+        const index = chips.indexOf(target);
+        history.push({
+          type: 'chip:replace',
+          index: index,
+          beforeHTML: target.innerHTML.replace(curTxt, newTxt), // Store the HTML before typing
+          afterHTML: target.innerHTML
+        });
       }
       closePopover();
     });
     renameInput?.addEventListener('apply-enter', ()=>applyBtn?.click());
+    
+    // Handle blur event to capture final typing state
+    renameInput?.addEventListener('blur', () => {
+      if (typingDebounceTimer) {
+        clearTimeout(typingDebounceTimer);
+        typingDebounceTimer = null;
+      }
+      const newTxt = renameInput?.value.trim();
+      if (newTxt && newTxt !== originalText) {
+        applyBtn?.click();
+      }
+    });
     delBtn?.addEventListener('click', ()=>{ removeChip(target); closePopover(); });
     captureBtn?.addEventListener('click', ()=> window.ComboOverlay?.ctrl?.startCapture?.());
     clearDirBtn?.addEventListener('click', ()=>{ 
@@ -1680,7 +2061,29 @@ function closePopover(){
 
   function closePopover(){ if(popEl){ popEl.remove(); popEl=null; } if(currentSelectedChip) currentSelectedChip.classList.remove('capture'); editCapture=false; }
 
-  function removeChip(chip){ if(!chip) return; const prev = chip.previousSibling, next = chip.nextSibling; if(prev && prev.classList && prev.classList.contains('sep')) prev.remove(); else if(next && next.classList && next.classList.contains('sep')) next.remove(); chip.remove(); if(currentSelectedChip===chip) currentSelectedChip=null; rebuildBuffer(); bus.emit('chip:remove', chip); pushHistory('Remove chip'); }
+  function removeChip(chip){ 
+    if(!chip) return; 
+    
+    // Get index before removing
+    const chips = getChipList();
+    const index = chips.indexOf(chip);
+    const html = chip.innerHTML;
+    
+    const prev = chip.previousSibling, next = chip.nextSibling; 
+    if(prev && prev.classList && prev.classList.contains('sep')) prev.remove(); 
+    else if(next && next.classList && next.classList.contains('sep')) next.remove(); 
+    chip.remove(); 
+    if(currentSelectedChip===chip) currentSelectedChip=null; 
+    rebuildBuffer(); 
+    bus.emit('chip:remove', chip);
+    
+    // Push discrete operation to history
+    history.push({
+      type: 'chip:remove',
+      index: index,
+      html: html
+    });
+  }
 
   function startControllerCapture(chip){ editCapture=true; selectChip(chip); chip.classList.add('capture'); setStatus('Capture: tilt D‑pad/stick for direction (buffered), press a button to set; UP also prefixes j.'); }
 
@@ -1689,7 +2092,7 @@ function closePopover(){
 
   /* ===== Global API (exposed) ===== */
   const API = {
-    version:'13.7', bus,
+    version:'13.8', bus,
     get overlay(){ return overlay; },
     get selectedChip(){ return currentSelectedChip; },
     get useGlobalColors(){ return !!useGlobalColors?.checked; },
@@ -1708,7 +2111,18 @@ function closePopover(){
     setStatus,
     undo, redo,
     get suppressHistory(){ return suppressHistory; },
-    set suppressHistory(v){ suppressHistory = !!v; }
+    set suppressHistory(v){ suppressHistory = !!v; },
+    // Combo branching API
+    combo: {
+      get graph(){ return comboGraph; },
+      saveNode: saveCurrentAsNode,
+      branchFromActive: branchFromActiveNode,
+      switchToNode,
+      updateNodeSelector
+    },
+    // Reset binding API
+    get suppressHistory(){ return suppressHistory; },
+    set suppressHistory(v){ suppressHistory = v; }
   };
   window.ComboOverlay = API;
 
@@ -1759,6 +2173,82 @@ window.addEventListener('keydown',(e)=>{
     toggleBtn?.click();
   }
   if(k==='c') clearOverlay();
+  
+  // Undo/Redo keyboard shortcuts
+  if((k==='z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) && !isTyping()) {
+    e.preventDefault();
+    performUndo();
+  }
+  
+  if((k==='z' && (e.ctrlKey || e.metaKey) && e.shiftKey) || (k==='y' && (e.ctrlKey || e.metaKey))) {
+    e.preventDefault();
+    performRedo();
+  }
+
+  // Cancel reset binding with ESC
+  if(k==='escape' && resetBindingActive){
+    cancelResetBinding();
+    e.preventDefault();
+  }
+
+  // Cancel preset binding with ESC
+  if(k==='escape' && presetBind.active){
+    presetBind.active = false;
+    setStatus('Preset binding cancelled.');
+    e.preventDefault();
+  }
+
+  // Skip current button binding with SPACE during preset binding
+  if(k===' ' && presetBind.active){
+    stepPresetBindingAssigned();
+    setStatus('Skipped current button binding.');
+    e.preventDefault();
+  }
+
+  // Caret mode toggle shortcut
+  if(k==='i' && (e.metaKey || e.ctrlKey)){
+    e.preventDefault();
+    toggleCaretMode();
+  }
+
+  // Caret Mode Navigation
+  if(caretModeActive){
+    if(k==='arrowleft'){
+      moveCaretLeft();
+      e.preventDefault();
+    }
+    if(k==='arrowright'){
+      moveCaretRight();
+      e.preventDefault();
+    }
+    if(k==='enter'){
+      insertAtCaret();
+      e.preventDefault();
+    }
+    if(k==='escape'){
+      toggleCaretMode();
+      e.preventDefault();
+    }
+    if(k==='[' || k===']'){
+      // Alternative bracket keys for caret movement
+      if(k==='[') moveCaretLeft();
+      if(k===']') moveCaretRight();
+      e.preventDefault();
+    }
+  }
+
+  // Combo branching shortcuts
+  if(k==='s' && (e.metaKey || e.ctrlKey)){
+    e.preventDefault();
+    const label = prompt('Enter node label:', `Combo ${new Date().toLocaleTimeString()}`);
+    if (label && label.trim()) {
+      saveCurrentAsNode(label.trim());
+    }
+  }
+  if(k==='b' && (e.metaKey || e.ctrlKey)){
+    e.preventDefault();
+    branchFromActiveNode();
+  }
 
   // Undo/Redo shortcuts
   if(k==='z' && (e.metaKey || e.ctrlKey)){
@@ -1795,4 +2285,947 @@ window.addEventListener('keydown',(e)=>{
   
   // Create initial history snapshot
   pushHistory('Initial state');
+
+  function deleteNode(nodeId) {
+    const nodeIndex = comboGraph.nodes.findIndex(n => n.id === nodeId);
+    if (nodeIndex === -1) {
+      setStatus('Node not found');
+      return false;
+    }
+    
+    const node = comboGraph.nodes[nodeIndex];
+    
+    // Check if this is the active node
+    if (comboGraph.activeId === nodeId) {
+      // If deleting active node, switch to another node if available
+      const otherNodes = comboGraph.nodes.filter(n => n.id !== nodeId);
+      if (otherNodes.length > 0) {
+        switchToNode(otherNodes[0].id);
+      } else {
+        // No other nodes, clear the overlay
+        clearOverlay();
+        comboGraph.activeId = null;
+      }
+    }
+    
+    // Remove the node
+    comboGraph.nodes.splice(nodeIndex, 1);
+    
+    // Remove any edges connected to this node
+    comboGraph.edges = comboGraph.edges.filter(edge => 
+      edge.from !== nodeId && edge.to !== nodeId
+    );
+    
+    // Update rootId if this was the root
+    if (comboGraph.rootId === nodeId) {
+      comboGraph.rootId = comboGraph.nodes.length > 0 ? comboGraph.nodes[0].id : null;
+    }
+    
+    // Update the node selector
+    updateNodeSelector();
+    
+    // Clear node history
+    nodeHistory.delete(nodeId);
+    
+    setStatus(`Deleted node: ${node.label}`);
+    return true;
+  }
+
+  function deleteActiveNode() {
+    if (!comboGraph.activeId) {
+      setStatus('No active node to delete');
+      return;
+    }
+    deleteNode(comboGraph.activeId);
+  }
+
+  /* ===== Branch Mode Toggle ===== */
+  let branchModeActive = false;
+
+  function toggleBranchMode() {
+    branchModeActive = !branchModeActive;
+    
+    const toggleBtn = $('#branchModeToggle');
+    if (toggleBtn) {
+      toggleBtn.textContent = `Branch Mode: ${branchModeActive ? 'On' : 'Off'}`;
+      toggleBtn.classList.toggle('active', branchModeActive);
+    }
+    
+    // Enable/disable branch controls based on mode
+    const saveBtn = $('#saveNodeBtn');
+    const branchBtn = $('#branchNodeBtn');
+    const deleteBtn = $('#deleteNodeBtn');
+    const selector = $('#nodeSelector');
+    
+    if (saveBtn) saveBtn.disabled = !branchModeActive;
+    if (branchBtn) branchBtn.disabled = !branchModeActive;
+    if (deleteBtn) deleteBtn.disabled = !branchModeActive;
+    if (selector) selector.disabled = !branchModeActive;
+    
+    setStatus(`Branch mode ${branchModeActive ? 'ON' : 'OFF'}`);
+  }
+
+  // Initialize branch mode to off on startup
+  toggleBranchMode();
+
+  // Add event listener for branch mode toggle
+  $('#branchModeToggle')?.addEventListener('click', () => toggleBranchMode());
+
+  /* ===== Reset Button Binding ===== */
+  let resetBindingActive = false;
+  
+  function startResetBinding() {
+    resetBindingActive = true;
+    setStatus('Press any controller button (except D-pad) to bind as Reset... Press ESC to cancel.');
+    document.body.classList.add('binding-active');
+  }
+  
+  function cancelResetBinding() {
+    resetBindingActive = false;
+    setStatus('Reset binding cancelled.');
+    document.body.classList.remove('binding-active');
+  }
+  
+  function setResetButton(buttonIndex) {
+    if (buttonIndex >= 12 && buttonIndex <= 15) {
+      setStatus('D-pad buttons cannot be used for Reset binding.');
+      return false;
+    }
+    
+    const p = profiles[activeProfile];
+    p.resetAction = `button:${buttonIndex}`;
+    saveProfiles();
+    updateResetLabel();
+    setStatus(`Reset bound to button ${buttonIndex}`);
+    resetBindingActive = false;
+    document.body.classList.remove('binding-active');
+    return true;
+  }
+  
+  function clearResetButton() {
+    const p = profiles[activeProfile];
+    p.resetAction = 'none';
+    saveProfiles();
+    updateResetLabel();
+    setStatus('Reset binding cleared.');
+  }
+  
+  function updateResetLabel() {
+    const resetLabel = $('#resetLabel');
+    const p = profiles[activeProfile];
+    if (resetLabel) {
+      if (p.resetAction === 'none') {
+        resetLabel.textContent = 'Reset: none';
+      } else {
+        const buttonIndex = parseInt(p.resetAction.split(':')[1], 10);
+        resetLabel.textContent = `Reset: button ${buttonIndex}`;
+      }
+    }
+  }
+
+  // Add event listeners for reset binding buttons
+  $('#bindResetBtn')?.addEventListener('click', startResetBinding);
+  $('#clearResetBtn')?.addEventListener('click', clearResetButton);
+
+  // Add CSS for binding active state
+  const style = document.createElement('style');
+  style.textContent = `
+    body.binding-active {
+      outline: 3px solid #ff4444 !important;
+      outline-offset: -3px;
+    }
+    body.binding-active::before {
+      content: 'Binding Reset Button... Press any button (except D-pad) or ESC to cancel';
+      position: fixed;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #ff4444;
+      color: white;
+      padding: 10px 20px;
+      border-radius: 5px;
+      z-index: 10000;
+      font-weight: bold;
+    }
+  `;
+  document.head.appendChild(style);
+
+  /* ===== Metadata Object ===== */
+  let comboMetadata = {
+    name: "",
+    game: "",
+    characters: [],
+    author: "",
+    date: "",
+    patch: "",
+    tags: [],
+    description: ""
+  };
+
+  /* ===== Metadata Modal Functions ===== */
+  function showMetadataModal() {
+    const modal = $('#metadataModal');
+    if (!modal) return;
+    
+    // Fill form with current metadata
+    $('#metaName').value = comboMetadata.name || '';
+    $('#metaGame').value = comboMetadata.game || '';
+    $('#metaCharacters').value = comboMetadata.characters.join(', ') || '';
+    $('#metaAuthor').value = comboMetadata.author || '';
+    $('#metaDate').value = comboMetadata.date || '';
+    $('#metaPatch').value = comboMetadata.patch || '';
+    $('#metaTags').value = comboMetadata.tags.join(', ') || '';
+    $('#metaDescription').value = comboMetadata.description || '';
+    
+    modal.style.display = 'flex';
+  }
+
+  function hideMetadataModal() {
+    const modal = $('#metadataModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function saveMetadata() {
+    // Parse comma-separated values into arrays
+    comboMetadata = {
+      name: $('#metaName').value.trim(),
+      game: $('#metaGame').value.trim(),
+      characters: $('#metaCharacters').value.split(',').map(s => s.trim()).filter(Boolean),
+      author: $('#metaAuthor').value.trim(),
+      date: $('#metaDate').value,
+      patch: $('#metaPatch').value.trim(),
+      tags: $('#metaTags').value.split(',').map(s => s.trim()).filter(Boolean),
+      description: $('#metaDescription').value.trim()
+    };
+    
+    hideMetadataModal();
+    setStatus('Metadata saved');
+  }
+
+  // PNG Copy/Export
+  $('#copyPngBtn')?.addEventListener('click',()=>{ exportOverlayAsPng().then(blob=>{ if(blob) navigator.clipboard?.write([new ClipboardItem({'image/png':blob})]).then(()=>setStatus('Copied PNG.')); }); });
+  $('#exportPngBtn')?.addEventListener('click',()=>{ exportOverlayAsPng().then(blob=>{ if(blob){ const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='combo_overlay.png'; a.click(); URL.revokeObjectURL(url); setStatus('Exported PNG.'); } }); });
+
+  // Metadata Modal Event Handlers
+  $('#metadataBtn')?.addEventListener('click', showMetadataModal);
+  $('#metaCancel')?.addEventListener('click', hideMetadataModal);
+  $('#metaSave')?.addEventListener('click', saveMetadata);
+
+  /* ===== Insertion Caret System ===== */
+  let caretModeActive = false;
+  let caretPosition = 0; // 0 = before first chip, 1 = after first chip, etc.
+  let caretElement = null;
+
+  function toggleCaretMode() {
+    caretModeActive = !caretModeActive;
+    
+    if (caretModeActive) {
+      // Enter caret mode
+      caretPosition = overlay.children.length; // Start at end
+      showCaret();
+      setStatus('Caret mode: Use ← → to move, Enter to insert, Esc to exit');
+    } else {
+      // Exit caret mode
+      hideCaret();
+      setStatus('Caret mode exited');
+    }
+  }
+
+  function showCaret() {
+    hideCaret(); // Remove any existing caret
+    
+    caretElement = document.createElement('div');
+    caretElement.className = 'insertion-caret';
+    
+    // Insert caret at current position
+    if (caretPosition === 0) {
+      overlay.insertBefore(caretElement, overlay.firstChild);
+    } else if (caretPosition >= overlay.children.length) {
+      overlay.appendChild(caretElement);
+    } else {
+      overlay.insertBefore(caretElement, overlay.children[caretPosition]);
+    }
+  }
+
+  function hideCaret() {
+    if (caretElement && caretElement.parentNode) {
+      caretElement.parentNode.removeChild(caretElement);
+    }
+    caretElement = null;
+  }
+
+  function moveCaretLeft() {
+    if (!caretModeActive) return;
+    
+    if (caretPosition > 0) {
+      caretPosition--;
+      showCaret();
+    }
+  }
+
+  function moveCaretRight() {
+    if (!caretModeActive) return;
+    
+    if (caretPosition < overlay.children.length) {
+      caretPosition++;
+      showCaret();
+    }
+  }
+
+  function insertAtCaret() {
+    if (!caretModeActive) return;
+    
+    const text = prompt('Enter chip text:');
+    if (!text || !text.trim()) {
+      return;
+    }
+    
+    const html = `<span style="color:${getComputedStyle(document.documentElement).getPropertyValue('--chip-text').trim()}">${escapeHtml(text.trim())}</span>`;
+    
+    // Calculate the actual chip index based on caret position
+    // The caret position counts all children (chips + separators)
+    // We need to convert this to a chip-only index for insertChipAt
+    const children = [...overlay.children];
+    let chipCount = 0;
+    let targetIndex = 0;
+    
+    for (let i = 0; i < children.length; i++) {
+      if (children[i].classList.contains('chip')) {
+        chipCount++;
+      }
+      if (i === caretPosition) {
+        // We've reached the caret position, set targetIndex to current chip count
+        targetIndex = chipCount;
+        break;
+      }
+    }
+    
+    // If caret is at the end, targetIndex should be chipCount
+    if (caretPosition >= children.length) {
+      targetIndex = chipCount;
+    }
+    
+    // Insert at the calculated chip index
+    insertChipAt(targetIndex, html);
+    
+    // Move caret to after the inserted chip
+    // The inserted chip adds 1 child (chip) and possibly 1 separator
+    const insertedChipIndex = children.findIndex(child => child === caretElement);
+    if (insertedChipIndex !== -1) {
+      // Find the position after the newly inserted chip
+      const newChip = overlay.children[insertedChipIndex];
+      const nextSibling = newChip.nextSibling;
+      if (nextSibling && nextSibling.classList.contains('sep')) {
+        // If there's a separator after the chip, move caret after the separator
+        caretPosition = Array.from(overlay.children).indexOf(nextSibling) + 1;
+      } else {
+        // Otherwise move caret after the chip
+        caretPosition = insertedChipIndex + 1;
+      }
+    } else {
+      // Fallback: just increment position
+      caretPosition++;
+    }
+    
+    showCaret();
+  }
+
+  // // single-selection delete fallback
+  // if((k==='delete'||k==='backspace') && window.ComboOverlay?.selectedChip){
+  //   removeChip(window.ComboOverlay.selectedChip);
+  //   window.ComboOverlay.closePopover?.();
+  // }
+
+  /* ===== LZString Compression Library ===== */
+  // Proper LZString implementation for actual compression
+  const LZString = {
+    compress: function(str) {
+      // This is a simplified LZ77-based compression implementation
+      if (!str) return "";
+      
+      let dict = {};
+      let data = (str + "\0").split('');
+      let out = [];
+      let phrase = data[0];
+      let code = 256;
+      let currChar;
+      
+      for (let i = 1; i < data.length; i++) {
+        currChar = data[i];
+        if (dict[phrase + currChar] != null) {
+          phrase += currChar;
+        } else {
+          out.push(phrase.length > 1 ? dict[phrase] : phrase.charCodeAt(0));
+          dict[phrase + currChar] = code;
+          code++;
+          phrase = currChar;
+        }
+      }
+      
+      out.push(phrase.length > 1 ? dict[phrase] : phrase.charCodeAt(0));
+      
+      // Convert to base64
+      let result = "";
+      for (let i = 0; i < out.length; i++) {
+        result += String.fromCharCode(out[i]);
+      }
+      return btoa(result);
+    },
+    
+    decompress: function(str) {
+      try {
+        // Decode from base64
+        let compressed = atob(str);
+        let data = [];
+        for (let i = 0; i < compressed.length; i++) {
+          data.push(compressed.charCodeAt(i));
+        }
+        
+        let dict = {};
+        let currChar = String.fromCharCode(data[0]);
+        let oldPhrase = currChar;
+        let out = [currChar];
+        let code = 256;
+        let phrase;
+        
+        for (let i = 1; i < data.length; i++) {
+          let currCode = data[i];
+          if (currCode < 256) {
+            phrase = String.fromCharCode(currCode);
+          } else {
+            phrase = dict[currCode] ? dict[currCode] : (oldPhrase + currChar);
+          }
+          out.push(phrase);
+          currChar = phrase.charAt(0);
+          dict[code] = oldPhrase + currChar;
+          code++;
+          oldPhrase = phrase;
+        }
+        
+        return out.join('');
+      } catch (e) {
+        console.warn('Decompression error:', e);
+        return null;
+      }
+    }
+  };
+
+  // Alternative approach: Use encodeURIComponent/decodeURIComponent for Unicode-safe encoding
+  const LZStringSafe = {
+    compress: function(str) {
+      if (!str) return "";
+      
+      // Use TextEncoder to convert Unicode string to Uint8Array, then to base64
+      const encoder = new TextEncoder();
+      const data = encoder.encode(str);
+      
+      // Convert Uint8Array to base64
+      let binary = "";
+      const bytes = new Uint8Array(data);
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      
+      // Convert to base64 and make it URL-safe (remove padding, replace +/ with -_)
+      let base64 = btoa(binary);
+      base64 = base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      
+      return base64;
+    },
+    
+    decompress: function(str) {
+      try {
+        // Convert from URL-safe base64 back to standard base64
+        let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+        // Add padding if needed
+        while (base64.length % 4) {
+          base64 += '=';
+        }
+        
+        // Decode from base64
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        
+        // Use TextDecoder to convert back to Unicode string
+        const decoder = new TextDecoder();
+        return decoder.decode(bytes);
+      } catch (e) {
+        console.warn('Decompression error:', e);
+        return null;
+      }
+    }
+  };
+
+  /* ===== Share Functionality ===== */
+  const SHARE_PREFIX = 'share_';
+  let shareCounter = 0;
+  
+  // Initialize share counter from localStorage
+  function initShareCounter() {
+    const lastShare = localStorage.getItem('share_counter');
+    shareCounter = lastShare ? parseInt(lastShare, 10) : 0;
+  }
+  
+  initShareCounter();
+  
+  function serializeProject() {
+    const exportData = {
+      version: "1.0",
+      meta: comboMetadata,
+      graph: comboGraph,
+      profile: profiles[activeProfile]
+    };
+    return JSON.stringify(exportData);
+  }
+  
+  function shareProject() {
+    console.log('Share button clicked'); // Debug log
+    testSimpleLog(); // Add test function call
+    
+    // Add visual feedback immediately
+    const shareBtn = $('#shareBtn');
+    if (shareBtn) {
+      shareBtn.classList.add('clicked');
+      setTimeout(() => shareBtn.classList.remove('clicked'), 300);
+    }
+    
+    const jsonData = serializeProject();
+    console.log('JSON data length:', jsonData.length); // Debug log
+    
+    // Check size limit (150KB)
+    if (jsonData.length > 150000) {
+      setStatus('Project too large for URL sharing (>150KB). Use Export instead.');
+      return;
+    }
+    
+    try {
+      console.log('Attempting compression...'); // Debug log
+      const compressed = LZStringSafe.compress(jsonData);
+      console.log('Compressed data length:', compressed.length); // Debug log
+      
+      // Generate short ID and store data in localStorage
+      shareCounter++;
+      localStorage.setItem('share_counter', shareCounter.toString());
+      const shortId = shareCounter.toString(36); // Convert to base36 for shorter IDs
+      localStorage.setItem(SHARE_PREFIX + shortId, compressed);
+      
+      const shareUrl = window.location.origin + window.location.pathname + '#id:' + shortId;
+      console.log('Share URL created:', shareUrl); // Debug log
+      
+      // Copy to clipboard
+      navigator.clipboard.write极速版(shareUrl).then(() => {
+        console.log('URL copied to clipboard successfully'); // Debug log
+        setStatus('Share URL copied to clipboard!');
+        
+        // Add visual feedback
+        if (shareBtn极速版) {
+          shareBtn.textContent = '✓ Copied!';
+          setTimeout(() => {
+            shareBtn.textContent = 'Share';
+          }, 2000);
+        }
+        
+      }).catch((err) => {
+        console.log('Clipboard copy failed:', err); // Debug log
+        // Fallback: show URL in status
+        setStatus('Share URL: ' + shareUrl);
+        
+        // Add visual feedback for fallback too
+        if (shareBtn) {
+          shareBtn.textContent = 'URL in status!';
+          setTimeout(() => {
+            shareBtn.textContent = 'Share';
+          }, 2000);
+        }
+      });
+      
+      // Update URL without reloading
+      window.history.replaceState(null, '', shareUrl);
+      console.log('URL updated in browser history'); // Debug log
+      
+    } catch (error) {
+      console.error('Error in shareProject:', error); // Debug log极速版
+      setStatus('Error creating share URL: ' + error.message);
+    }
+  }
+  
+  function loadFromHash() {
+    const hash = window.location.hash;
+    
+    if (hash.startsWith('#id:')) {
+      // Short URL format: #id:abc123
+      const shortId = hash.substring(4);
+      const compressed = localStorage.getItem(SHARE_PREFIX + shortId);
+      
+      if (!compressed) {
+        setStatus('Share data not found or expired');
+        return;
+      }
+      
+      const jsonData = LZStringSafe.decompress(compressed);
+      
+      if (!jsonData) {
+        setStatus('Invalid share data in URL');
+        return;
+      }
+      
+      try {
+        const data = JSON.parse(jsonData);
+        
+        if (data.version === "1.0" && data.meta && data.graph && data.profile) {
+          // New format - metadata + graph + profile
+          comboMetadata = data.meta;
+          comboGraph = data.graph;
+          
+          // Replace current profile with imported one
+          profiles[activeProfile] = data.profile;
+          saveProfiles();
+          refreshProfileUI();
+          updateNodeSelector();
+          
+          // Restore active node if it exists
+          if(comboGraph.activeId){
+            const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.activeId);
+            if(activeNode){
+              restoreNodeChips(activeNode);
+            }
+          }
+          
+          setStatus('Project loaded from share URL');
+        } else {
+          setStatus('Invalid project format in share URL');
+        }
+      } catch (error) {
+        setStatus('Error loading from share URL: ' + error.message);
+      }
+      
+    } else if (hash.startsWith('#data:')) {
+      // Legacy format: #data:compressed_data
+      const compressed = hash.substring(6);
+      const jsonData = LZStringSafe.decompress(compressed);
+      
+      if (!jsonData) {
+        setStatus('Invalid share data in URL');
+        return;
+      }
+      
+      try {
+        const data = JSON.parse(jsonData);
+        
+        if (data.version === "1.0" && data.meta && data.graph && data.profile) {
+          // New format - metadata + graph + profile
+          comboMetadata = data.meta;
+          comboGraph = data.graph;
+          
+          // Replace current profile with imported one
+          profiles[activeProfile] = data.profile;
+          saveProfiles();
+          refreshProfileUI();
+          updateNodeSelector();
+          
+          // Restore active node极速版 if it exists
+          if(comboGraph.activeId){
+            const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.activeId);
+            if(activeNode){
+              restoreNodeChips(activeNode);
+            }
+          }
+          
+          setStatus('Project loaded from share URL');
+        } else {
+          setStatus('Invalid project format in share URL');
+        }
+      } catch (error) {
+        setStatus('Error loading from share URL: ' + error.message);
+      }
+    }
+  }
+
+  // Add event listener for Share button
+  const shareBtn = $('#shareBtn');
+  console.log('Share button element:', shareBtn); // Debug log
+  if (shareBtn) {
+    shareBtn.addEventListener('click', shareProject);
+    console.log('Share button event listener attached'); // Debug log
+  } else {
+    console.warn('Share button not found in DOM'); // Debug log
+    // Fallback: attach listener after DOM is fully loaded
+    window.addEventListener('load', () => {
+      const shareBtnLoad = $('#shareBtn');
+      if (shareBtnLoad) {
+        shareBtnLoad.addEventListener('click', shareProject);
+        console.log('Share button event listener attached after load'); // Debug log
+      } else {
+        console.error('Share button still not found after DOM load'); // Debug log
+      }
+    });
+  }
+
+  // Load from hash on startup
+  window.addEventListener('load', loadFromHash);
+
+  // Add event listeners for test buttons
+  $('#testBtn1')?.addEventListener('click', function() {
+    console.log('Test Button 1 clicked');
+    this.classList.add('clicked');
+    setTimeout(() => this.classList.remove('clicked'), 300);
+    testSimpleLog(); // Add test function call
+  });
+
+  $('#testBtn2')?.addEventListener('click', function() {
+    console.log('Test Button 2 clicked');
+    this.classList.add('clicked');
+    setTimeout(() => this.classList.remove('clicked'), 300);
+    testSimpleLog(); // Add test function call
+  });
+
+  // Add a simple test function to verify basic functionality
+  function testSimpleLog() {
+    console.log('Simple test function executed');
+  }
+
+  // Helper functions for discrete undo/redo operations
+  function getChipList() {
+    return Array.from(overlay.querySelectorAll('.chip'));
+  }
+
+  function insertChipAt(index, html, perButtonBg) {
+    const chips = getChipList();
+    const targetChip = chips[index];
+    
+    if (index === chips.length) {
+      // Insert at the end
+      if (overlay.children.length) addSeparator();
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.innerHTML = html;
+      c.tabIndex = 0;
+      if (!useGlobalColors?.checked && perButtonBg) c.style.backgroundColor = perButtonBg;
+      c.addEventListener('click', (ev) => { selectChip(c); openPopover(c); ev.stopPropagation(); });
+      c.addEventListener('dblclick', (ev) => { selectChip(c); openPopover(c, true); ev.stopPropagation(); });
+      overlay.appendChild(c);
+      overlay.scrollLeft = overlay.scrollWidth;
+      rebuildBuffer();
+      bus.emit('chip:add', c);
+      return c;
+    } else if (targetChip) {
+      // Insert before existing chip
+      const separator = document.createElement('span');
+      separator.className = 'sep';
+      separator.textContent = currentSeparator();
+      
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.innerHTML = html;
+      c.tabIndex = 0;
+      if (!useGlobalColors?.checked && perButtonBg) c.style.backgroundColor = perButtonBg;
+      c.addEventListener('click', (ev) => { selectChip(c); openPopover(c); ev.stopPropagation(); });
+      c.addEventListener('dblclick', (ev) => { selectChip(c); openPopover(c, true); ev.stopPropagation(); });
+      
+      overlay.insertBefore(separator, targetChip);
+      overlay.insertBefore(c, targetChip);
+      rebuildBuffer();
+      bus.emit('chip:add', c);
+      return c;
+    }
+    return null;
+  }
+
+  function removeChipAt(index) {
+    const chips = getChipList();
+    const chip = chips[index];
+    if (!chip) return null;
+    
+    const prev = chip.previousSibling, next = chip.nextSibling;
+    const html = chip.innerHTML;
+    
+    if (prev && prev.classList && prev.classList.contains('sep')) prev.remove();
+    else if (next && next.classList && next.classList.contains('sep')) next.remove();
+    
+    chip.remove();
+    if (currentSelectedChip === chip) currentSelectedChip = null;
+    rebuildBuffer();
+    bus.emit('chip:remove', chip);
+    
+    return { chip, html };
+  }
+
+  function replaceChipAt(index, html) {
+    const chips = getChipList();
+    const chip = chips[index];
+    if (!chip) return null;
+    
+    const oldHTML = chip.innerHTML;
+    chip.innerHTML = html;
+    rebuildBuffer();
+    bus.emit('chip:replace', chip);
+    
+    return { chip, oldHTML, newHTML: html };
+  }
+
+  // New history module with discrete operations
+  const history = {
+    stack: [],
+    index: -1,
+    maxSize: 200,
+    
+    push(op) {
+      // Remove any operations after current index
+      if (this.index < this.stack.length - 1) {
+        this.stack = this.stack.slice(0, this.index + 1);
+      }
+      
+      this.stack.push(op);
+      this.index = this.stack.length - 1;
+      
+      // Trim stack if exceeds max size
+      if (this.stack.length > this.maxSize) {
+        this.stack.shift();
+        this.index--;
+      }
+    },
+    
+    undo() {
+      if (!this.canUndo()) return null;
+      const op = this.stack[this.index];
+      this.index--;
+      return op;
+    },
+    
+    redo() {
+      if (!this.canRedo()) return null;
+      this.index++;
+      return this.stack[this.index];
+    },
+    
+    clearAll() {
+      this.stack = [];
+      this.index = -1;
+    },
+    
+    canUndo() {
+      return this.index >= 0;
+    },
+    
+    canRedo() {
+      return this.index < this.stack.length - 1;
+    }
+  };
+
+  // Undo/Redo execution functions
+  function performUndo() {
+    const op = history.undo();
+    if (!op) return;
+    
+    console.log('Performing undo:', op.type, 'index:', op.index, 'stack length:', history.stack.length, 'index:', history.index);
+    
+    suppressHistory = true;
+    
+    switch (op.type) {
+      case 'chip:add':
+        console.log('Undoing chip:add at index', op.index);
+        removeChipAt(op.index);
+        break;
+      case 'chip:remove':
+        console.log('Undoing chip:remove at index', op.index);
+        insertChipAt(op.index, op.html);
+        break;
+      case 'chip:replace':
+        console.log('Undoing chip:replace at index', op.index);
+        replaceChipAt(op.index, op.beforeHTML);
+        break;
+      case 'overlay:clear':
+        console.log('Undoing overlay:clear with', op.chips.length, 'chips');
+        // Restore all chips - don't clear first, just rebuild from saved state
+        overlay.innerHTML = '';
+        op.chips.forEach((html, index) => {
+          insertChipAt(index, html);
+        });
+        break;
+    }
+    
+    suppressHistory = false;
+    setStatus(`Undo: ${op.type}`);
+  }
+
+  function performRedo() {
+    const op = history.redo();
+    if (!op) return;
+    
+    suppressHistory = true;
+    
+    switch (op.type) {
+      case 'chip:add':
+        insertChipAt(op.index, op.html, op.perButtonBg);
+        break;
+      case 'chip:remove':
+        removeChipAt(op.index);
+        break;
+      case 'chip:replace':
+        replaceChipAt(op.index, op.afterHTML);
+        break;
+      case 'overlay:clear':
+        clearOverlay();
+        break;
+    }
+    
+    suppressHistory = false;
+    setStatus(`Redo: ${op.type}`);
+  }
+
+  // Add button event listeners and state updates
+  function setupUndoRedoButtons() {
+    const undoBtn = document.getElementById('undoBtn');
+    const redoBtn = document.getElementById('redoBtn');
+    
+    if (undoBtn) {
+      undoBtn.addEventListener('click', performUndo);
+    }
+    
+    if (redoBtn) {
+      redoBtn.addEventListener('click', performRedo);
+    }
+    
+    // Function to update button states
+    function updateButtonStates() {
+      if (undoBtn) undoBtn.disabled = !history.canUndo();
+      if (redoBtn) redoBtn.disabled = !history.canRedo();
+    }
+    
+    // Update button states after each history operation
+    const originalPush = history.push;
+    history.push = function(op) {
+      originalPush.call(this, op);
+      updateButtonStates();
+    };
+    
+    // Also update after undo/redo operations
+    const originalUndo = history.undo;
+    history.undo = function() {
+      const result = originalUndo.call(this);
+      updateButtonStates();
+      return result;
+    };
+    
+    const originalRedo = history.redo;
+    history.redo = function() {
+      const result = originalRedo.call(this);
+      updateButtonStates();
+      return result;
+    };
+    
+    // Initial state update
+    updateButtonStates();
+  }
+  
+  // Set up buttons when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupUndoRedoButtons);
+  } else {
+    setupUndoRedoButtons();
+  }
 })();

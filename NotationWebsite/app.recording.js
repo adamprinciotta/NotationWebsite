@@ -71,6 +71,7 @@
   let mode='idle'; // 'idle' | 'record' | 'play'
   let t0=0;        // reference time (ms)
   let script=[];   // [{t:number, chipsHTML:string}] – a snapshot per chip add
+  let markers=[];  // [{stepIndex:number, tMs:number}] – time markers for each step
   let rafId=null;
 
   // ===== Option B: Global Playline (module scope so stop() can call it) =====
@@ -122,12 +123,20 @@
     const t=performance.now()-t0; // relative
     const chipsHTML=[...CO.overlay.querySelectorAll('.chip')].map(ch=>ch.innerHTML);
     script.push({t, chipsHTML});
+    
+    // Store time marker for this step
+    markers.push({stepIndex: script.length - 1, tMs: t});
+    
     CO.setStatus(`Recorded step ${script.length} @ ${Math.round(t)}ms`);
   });
   CO.on('overlay:clear', ()=>{
     if(mode==='record'){
       const t=performance.now()-t0;
       script.push({t, chipsHTML:[]});
+      
+      // Store time marker for clear action
+      markers.push({stepIndex: script.length - 1, tMs: t});
+      
       CO.setStatus('Recorded: overlay cleared');
     }
   });
@@ -146,12 +155,16 @@
 
 // Reset action integration (controller "Reset" mapping)
 // - If playing: hard stop immediately, then restart from the beginning
-// - If recording: restart recording
+// - If recording: stop recording and start playback of what was recorded
 // - If idle and sticky replay was armed: start from beginning
 CO.on && CO.on('reset:action', ()=>{
   if (mode === 'record'){
     stop();
-    requestAnimationFrame(startRecord);
+    if (script.length > 0) {
+      requestAnimationFrame(play);
+    } else {
+      CO.setStatus('Nothing recorded to play.');
+    }
     return;
   }
   if (mode === 'play'){
@@ -559,7 +572,7 @@ function startGrading(steps, chipEls, state){
   // Save/Load script JSON
   function saveScript(){
     if(!script.length){ CO.setStatus('No script to save.'); return; }
-    const blob=new Blob([JSON.stringify({version:CO.version, script}, null, 2)],{type:'application/json'});
+    const blob=new Blob([JSON.stringify({version:CO.version, script, markers}, null, 2)],{type:'application/json'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a'); a.href=url; a.download='combo_script.json'; a.click();
     URL.revokeObjectURL(url);
@@ -570,7 +583,11 @@ function startGrading(steps, chipEls, state){
     f.text().then(txt=>{
       try{
         const obj=JSON.parse(txt);
-        if(Array.isArray(obj.script)){ script=obj.script; CO.setStatus(`Loaded script with ${script.length} steps.`); }
+        if(Array.isArray(obj.script)){ 
+          script=obj.script; 
+          markers=obj.markers || []; // Load markers if available
+          CO.setStatus(`Loaded script with ${script.length} steps${markers.length ? ' and ' + markers.length + ' markers' : ''}.`); 
+        }
         else { CO.setStatus('Invalid script file.'); }
       }catch(e){ CO.setStatus('Failed to parse script file.'); }
     });
@@ -583,6 +600,70 @@ function startGrading(steps, chipEls, state){
   saveScriptBtn?.addEventListener('click', saveScript);
   loadScriptBtn?.addEventListener('click', ()=> loadScriptInput?.click());
   loadScriptInput?.addEventListener('change', loadScriptFromFile);
+
+  // Create markers UI container
+  const markersContainer = document.createElement('div');
+  markersContainer.id = 'markersContainer';
+  markersContainer.style.cssText = `
+    position: fixed;
+    right: 20px;
+    top: 100px;
+    background: rgba(18,18,22,0.9);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 8px;
+    padding: 10px;
+    max-height: 300px;
+    overflow-y: auto;
+    font-size: 12px;
+    color: #eef0f5;
+    z-index: 1000;
+  `;
+  
+  // Add to document
+  document.body.appendChild(markersContainer);
+  
+  // Function to update markers UI
+  function updateMarkersUI() {
+    if (!markers.length) {
+      markersContainer.innerHTML = '<div style="padding: 10px; color: #9aa3b2;">No markers recorded</div>';
+      return;
+    }
+    
+    let html = '<div style="margin-bottom: 8px; font-weight: bold; border-bottom: 1px solid #2a2f3a; padding-bottom: 4px;">Time Markers</div>';
+    
+    markers.forEach((marker, index) => {
+      const stepText = script[marker.stepIndex]?.chipsHTML?.length 
+        ? `Step ${marker.stepIndex + 1}` 
+        : 'Clear';
+      
+      html += `
+        <div style="display: flex; justify-content: space-between; margin-bottom: 4px; padding: 2px 0;">
+          <span>${stepText}</span>
+          <span style="color: #64ffda;">${Math.round(marker.tMs)}ms</span>
+        </div>
+      `;
+    });
+    
+    markersContainer.innerHTML = html;
+  }
+  
+  // Initial update
+  updateMarkersUI();
+  
+  // Update markers UI when markers change
+  const originalPush = markers.push;
+  markers.push = function() {
+    const result = originalPush.apply(this, arguments);
+    updateMarkersUI();
+    return result;
+  };
+  
+  // Also update when markers array is modified other ways
+  markers.splice = function() {
+    const result = Array.prototype.splice.apply(this, arguments);
+    updateMarkersUI();
+    return result;
+  };
 
   // Console breadcrumbs so the user sees activity
   CO.on('status', msg=>console.log('[recording]', msg));
