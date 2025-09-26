@@ -123,6 +123,7 @@
 
           <button id="copyBtn" class="btn">Copy text</button>
           <button id="copyPngBtn" class="btn">Copy PNG</button>
+          <button id="copyNumpadBtn" class="btn">Copy Numpad</button>
           <button id="exportPngBtn" class="btn">Export PNG</button>
           <button id="toggleMode" class="btn primary">Mode: Live</button>
           <button id="practiceToggle" class="btn">Practice Mode: Off (P)</button>
@@ -164,6 +165,16 @@
         <div class="row grid-2"><label>Charge frames (60fps)<input id="chargeFrames" type="number" value="30"></label><label>Charge→Opposite+Btn (ms)<input id="chargeWindow" type="number" value="180"></label></div>
         <div class="row grid-2"><label>Mash window (ms)<input id="mashWindowMs" type="number" value="250" min="100" max="2000" step="50"></label><label>Fill lead-in (ms)<input id="indicatorMs" type="number" value="1000" min="100" step="50"></label></div>
         <div class="row"><div class="tiny">Mash window: How long rapid identical inputs are grouped together. Fill lead-in: How long the button-fill animation takes before a hit.</div>
+        </div>
+        
+        <!-- Notation Display Mode -->
+        <div class="row">
+          <label>Notation Display:
+            <div class="radio-group">
+              <label><input type="radio" name="notationMode" value="images" checked> Images</label>
+              <label><input type="radio" name="notationMode" value="numpad"> Numpad</label>
+            </div>
+          </label>
         </div>
     </div>
 

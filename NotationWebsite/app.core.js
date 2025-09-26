@@ -183,7 +183,7 @@
   const DEFAULT_BUTTON_LABELS=['L','M','H','S','LB','RB','LT','RT','Select','Start','L3','R3','D↑','D↓','D←','D→'];
   const DEFAULT_BUTTON_COLORS=Array(16).fill('#000000');
   const DEFAULT_BUTTON_BG=Array(16).fill('#f5f5f5');
-  function defaultProfile(){return {name:'Default',buttonLabels:[...DEFAULT_BUTTON_LABELS],buttonColors:[...DEFAULT_BUTTON_COLORS],buttonBgColors:[...DEFAULT_BUTTON_BG],deadzone:0.5,chordWindow:80,repeatLockout:110,holdMs:250,motionWindow:700,motionCoupleMs:130,chargeFrames:30,chargeWindow:180,mashWindowMs:350,facing:'right',resetAction:'none',separator:'>'}};
+  function defaultProfile(){return {name:'Default',buttonLabels:[...DEFAULT_BUTTON_LABELS],buttonColors:[...DEFAULT_BUTTON_COLORS],buttonBgColors:[...DEFAULT_BUTTON_BG],deadzone:0.5,chordWindow:80,repeatLockout:110,holdMs:250,motionWindow:700,motionCoupleMs:130,chargeFrames:30,chargeWindow:180,mashWindowMs:350,facing:'right',resetAction:'none',separator:'>',notationMode:'images'}};
   function loadProfiles(){try{const raw=localStorage.getItem(LS_PROFILES); if(!raw) return [defaultProfile()]; const arr=JSON.parse(raw); return Array.isArray(arr)&&arr.length?arr:[defaultProfile()];}catch{return [defaultProfile()];}}
   function saveProfiles(){localStorage.setItem(LS_PROFILES, JSON.stringify(profiles));}
   function loadActive(){const v=parseInt(localStorage.getItem(LS_ACTIVE)||'0',10);return Number.isFinite(v)&&v>=0&&v<profiles.length? v:0;}
@@ -1217,6 +1217,12 @@ function renderResetLabel(){
     setInputValue('#chargeWindow',   p.chargeWindow);
     setInputValue('#mashWindowMs',   p.mashWindowMs ?? 350);
     setInputValue('#indicatorMs', p.indicatorMs ?? 1000);
+    
+    // Set notation mode radio buttons
+    const notationRadios = document.querySelectorAll('input[name="notationMode"]');
+    notationRadios.forEach(radio => {
+      radio.checked = (radio.value === (p.notationMode || 'images'));
+    });
 
     renderResetLabel();
     applyCssKnobs();
@@ -1232,7 +1238,7 @@ function renderResetLabel(){
   newProfileBtn?.addEventListener('click',()=>{profiles.push(defaultProfile());activeProfile=profiles.length-1;saveProfiles();saveActive();refreshProfileUI();});
   dupProfileBtn?.addEventListener('click',()=>{const copy=JSON.parse(JSON.stringify(profiles[activeProfile])); copy.name=(copy.name||'Profile')+' (copy)'; profiles.push(copy); activeProfile=profiles.length-1; saveProfiles(); saveActive(); refreshProfileUI();});
   delProfileBtn?.addEventListener('click',()=>{ if(profiles.length<=1) return; profiles.splice(activeProfile,1); activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI();});
-  saveProfileBtn?.addEventListener('click',()=>{ const p=profiles[activeProfile]; p.name=profileName?.value.trim()||`Profile ${activeProfile+1}`; p.facing=facingSel?.value||p.facing; p.resetAction=resetSel?.value||p.resetAction; p.separator=separatorInp.value||'>'; p.deadzone=parseFloat($('#deadzone')?.value)||p.deadzone; p.chordWindow=parseInt($('#chordWindow')?.value)||p.chordWindow; p.repeatLockout=parseInt($('#repeatLockout')?.value)||p.repeatLockout; p.holdMs=parseInt($('#holdMs')?.value)||p.holdMs; p.motionWindow=parseInt($('#motionWindow')?.value)||p.motionWindow; p.motionCoupleMs=parseInt($('#motionCoupleMs')?.value)||p.motionCoupleMs; p.chargeFrames=parseInt($('#chargeFrames')?.value)||p.chargeFrames; p.chargeWindow=parseInt($('#chargeWindow')?.value)||p.chargeWindow; p.mashWindowMs=parseInt($('#mashWindowMs')?.value)||350; saveProfiles(); refreshProfileUI();});
+  saveProfileBtn?.addEventListener('click',()=>{ const p=profiles[activeProfile]; p.name=profileName.value.trim()||`Profile ${activeProfile+1}`; p.facing=facingSel.value; p.resetAction=resetSel.value; p.separator=separatorInp.value||'>'; p.deadzone=parseFloat($('#deadzone').value)||p.deadzone; p.chordWindow=parseInt($('#chordWindow').value)||p.chordWindow; p.repeatLockout=parseInt($('#repeatLockout').value)||p.repeatLockout; p.holdMs=parseInt($('#holdMs').value)||p.holdMs; p.motionWindow=parseInt($('#motionWindow').value)||p.motionWindow; p.motionCoupleMs=parseInt($('#motionCoupleMs').value)||p.motionCoupleMs; p.chargeFrames=parseInt($('#chargeFrames').value)||p.chargeFrames; p.chargeWindow=parseInt($('#chargeWindow').value)||p.chargeWindow; p.mashWindowMs=parseInt($('#mashWindowMs').value)||p.mashWindowMs; p.notationMode = document.querySelector('input[name="notationMode"]:checked')?.value || 'images'; saveProfiles(); refreshProfileUI();});
 
   exportBtn?.addEventListener('click',()=>{
     const exportData = {
@@ -1346,6 +1352,144 @@ document.addEventListener('input',(e)=>{
   function rebuildBuffer(){ const chips=[...overlay.querySelectorAll('.chip')]; buffer = chips.map(ch=>ch.innerText.trim()); }
   let buffer=[];
 
+  // Numpad notation mapping system
+  const numpadToDirection = {
+    '1': 'db', // down-back
+    '2': 'd',  // down
+    '3': 'df', // down-forward
+    '4': 'b',  // back
+    '5': '',   // neutral (no direction)
+    '6': 'f',  // forward
+    '7': 'ub', // up-back
+    '8': 'u',  // up
+    '9': 'uf'  // up-forward
+  };
+
+  const directionToNumpad = {
+    'db': '1', 'bd': '1',
+    'd': '2',
+    'df': '3', 'fd': '3',
+    'b': '4',
+    'f': '6',
+    'ub': '7', 'bu': '7',
+    'u': '8',
+    'uf': '9', 'fu': '9',
+    // Add missing mappings from dirToImg
+    'l': '4', // left = back
+    'r': '6',  // right = forward
+    // Add motion input mappings
+    'qcf': '236', // quarter circle forward
+    'qcb': '214', // quarter circle back
+    'dpf': '623', // dragon punch forward
+    'dpb': '421', // dragon punch back
+    'hcf': '41236', // half circle forward
+    'hcb': '63214', // half circle back
+    '360': '63214'  // full circle
+  };
+
+  // Common motion inputs - now with motion names as keys for text detection
+  const motionInputs = {
+    'qcf': '236', // quarter circle forward
+    'qcb': '214', // quarter circle back
+    'dp': '623',  // dragon punch
+    'dpb': '421', // dragon punch back
+    'hcb': '63214', //half circle back
+    'hcf': '41236', // half circle forward
+    '360': '63214', // full circle
+    'doubleqcf': '236236', // double quarter circle forward
+    'doubleqcb': '214214'  // double quarter circle back
+  };
+
+  // Reverse mapping for parsing numpad notation (pattern -> name)
+  const motionPatterns = {
+    '236': 'qcf',
+    '214': 'qcb', 
+    '623': 'dpf',
+    '421': 'dpb',
+    '63214': 'hcb',
+    '41236': 'hcf',
+    '41236987': '360',
+    '236236': 'qcf qcf', // double quarter circle forward (two separate qcf motions)
+    '214214': 'qcb qcb'  // double quarter circle back (two separate qcb motions)
+  };
+
+  function chipToNumpadNotation(chipHTML) {
+    console.log('=== chipToNumpadNotation DEBUG ===');
+    console.log('Input HTML:', chipHTML);
+    
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = chipHTML;
+    
+    // Get all direction images
+    const images = tempDiv.querySelectorAll('img');
+    console.log('Found', images.length, 'images');
+    
+    let numpadNotation = '';
+    
+    // Extract directions from images
+    for (const img of images) {
+      const alt = img.alt;
+      console.log('Image alt:', alt, 'src:', img.src);
+      if (directionToNumpad[alt]) {
+        console.log('Mapped', alt, 'to', directionToNumpad[alt]);
+        numpadNotation += directionToNumpad[alt];
+      } else {
+        console.log('No mapping found for alt:', alt);
+      }
+    }
+    
+    // Check for motion patterns that might be represented by multiple images
+    // For example, two qcf images should become 236236
+    const imageAlts = Array.from(images).map(img => img.alt);
+    
+    // Handle double quarter circle forward (two qcf images)
+    if (imageAlts.length === 2 && imageAlts[0] === 'qcf' && imageAlts[1] === 'qcf') {
+      numpadNotation = '236236';
+    }
+    
+    // Handle double quarter circle back (two qcb images)
+    if (imageAlts.length === 2 && imageAlts[0] === 'qcb' && imageAlts[1] === 'qcb') {
+      numpadNotation = '214214';
+    }
+    
+    // Extract button text - look for spans with text content
+    const spans = tempDiv.querySelectorAll('span');
+    console.log('Found', spans.length, 'spans');
+    
+    let buttonText = '';
+    
+    for (const span of spans) {
+      const text = span.textContent.trim();
+      console.log('Span text:', text);
+      if (text && !text.startsWith('j.')) { // Skip jump prefix
+        buttonText = text;
+        break;
+      }
+    }
+    
+    console.log('Final numpadNotation:', numpadNotation, 'buttonText:', buttonText);
+    console.log('Returning:', (numpadNotation || '5') + buttonText);
+    console.log('=== END DEBUG ===');
+    
+    // If we have a motion pattern (multiple directions), return it
+    if (numpadNotation.length > 1) {
+      return numpadNotation + buttonText;
+    }
+    
+    // If we have a single direction, return it
+    if (numpadNotation) {
+      return numpadNotation + buttonText;
+    }
+    
+    // If no directions, return neutral (5) + button
+    return '5' + buttonText;
+  }
+
+  function getNumpadNotationText() {
+    const chips = [...overlay.querySelectorAll('.chip')];
+    return chips.map(chip => chipToNumpadNotation(chip.innerHTML)).join(' ');
+  }
+
   function addChipElHTML(html, perButtonBg){
     if(overlay.children.length) addSeparator();
     const c=document.createElement('span'); c.className='chip'; c.innerHTML=html; c.tabIndex=0;
@@ -1389,7 +1533,18 @@ document.addEventListener('input',(e)=>{
     });
   }
   $('#clearBtn')?.addEventListener('click', clearOverlay);
-  $('#copyBtn')?.addEventListener('click', ()=>{ const txt=buffer.join(currentSeparator().trim()); navigator.clipboard?.writeText(txt); setStatus('Copied text.'); });
+  $('#copyBtn')?.addEventListener('click', ()=>{ 
+    const txt=buffer.join(currentSeparator().trim()); 
+    navigator.clipboard?.writeText(txt); 
+    setStatus('Copied text.'); 
+  });
+  
+  // Add copy numpad notation button
+  $('#copyNumpadBtn')?.addEventListener('click', ()=>{ 
+    const numpadText = getNumpadNotationText();
+    navigator.clipboard?.writeText(numpadText);
+    setStatus('Copied numpad notation.');
+  });
   let modeLive=true; $('#toggleMode')?.addEventListener('click',()=>{ modeLive=!modeLive; $('#toggleMode').textContent='Mode: '+(modeLive?'Live':'Record'); setStatus('Mode toggled.'); });
 
   // Combo Branching UI Event Handlers
@@ -1489,9 +1644,27 @@ function trackDirections(gp){
   function compressedSeqWithin(ms){ const t=now(), start=t-ms; const seq=dirHistory.filter(e=>e.t>=start).map(e=>e.token).filter(x=>x!=='n').map(facingMap); const comp=[]; for(const s of seq){ if(!comp.length||comp[comp.length-1]!==s) comp.push(s);} return comp; }
   function matchPattern(seq, pattern){ let i=0; for(const p of pattern){ i=seq.indexOf(p,i); if(i===-1) return false; i++; } return true; }
   function detectMotionForButton(){ const p=profiles[activeProfile]; const seq=compressedSeqWithin(p.motionWindow||700);
+    
+    // Check for 360 first (highest priority - must have all four cardinal directions in any order)
+    const set=new Set(seq); 
+    if(['u','d','l','r'].every(k=>set.has(k))) {
+      return `<img class="img" src="images/360.png" alt="360">`;
+    }
+    
+    // Check for double quarter circle forward (236236)
+    if (matchPattern(seq, ['d','dr','r','d','dr','r'])) {
+      return `<img class="img" src="images/qcf.png" alt="qcf"> <img class="img" src="images/qcf.png" alt="qcf">`;
+    }
+    
+    // Check for double quarter circle back (214214)  
+    if (matchPattern(seq, ['d','dl','l','d','dl','l'])) {
+      return `<img class="img" src="images/qcb.png" alt="qcb"> <img class="img" src="images/qcb.png" alt="qcb">`;
+    }
+    
+    // Check regular motion inputs last
     const tests=[ ['qcf',['d','dr','r']], ['qcb',['d','dl','l']], ['dpf',['r','d','dr']], ['dpb',['l','d','dl']], ['hcf',['l','d','r']], ['hcb',['r','d','l']] ];
-    for(const [key,pat] of tests){ if(matchPattern(seq,pat)) return `<img class=\"img\" src=\"images/${key}.png\" alt=\"${key}\">`; }
-    const set=new Set(seq); if(['u','d','l','r'].every(k=>set.has(k))) return `<img class=\"img\" src=\"images/360.png\" alt=\"360\">`;
+    for(const [key,pat] of tests){ if(matchPattern(seq,pat)) return `<img class="img" src="images/${key}.png" alt="${key}">`; }
+    
     return null; }
   function snapshotDirection(){ const last=dirHistory.length?dirHistory[dirHistory.length-1].token:'n'; return last==='n'?null:last; }
 
@@ -3227,5 +3400,195 @@ window.addEventListener('keydown',(e)=>{
     document.addEventListener('DOMContentLoaded', setupUndoRedoButtons);
   } else {
     setupUndoRedoButtons();
+  }
+
+  function parseNumpadNotation(text) {
+    console.log('=== parseNumpadNotation DEBUG ===');
+    console.log('Input text:', text);
+    const tokens = text.split(/\s+/).filter(token => token.trim());
+    console.log('Tokens:', tokens);
+    const chips = [];
+    
+    // Sort motion patterns by length (longest first) to ensure proper matching
+    const sortedPatterns = Object.entries(motionPatterns).sort((a, b) => b[0].length - a[0].length);
+    console.log('Sorted patterns:', sortedPatterns);
+    
+    for (const token of tokens) {
+      console.log('Processing token:', token);
+      // Check for motion inputs first
+      let motionFound = false;
+      for (const [motionPattern, motionName] of sortedPatterns) {
+        console.log('Checking pattern:', motionPattern, '->', motionName);
+        if (token.startsWith(motionPattern)) {
+          console.log('Found matching pattern:', motionPattern);
+          const button = token.slice(motionPattern.length);
+          console.log('Button part:', button);
+          
+          // Handle double motions (qcf qcf, qcb qcb)
+          if (motionName.includes(' ')) {
+            console.log('Double motion detected:', motionName);
+            const motions = motionName.split(' ');
+            chips.push({
+              type: 'double_motion',
+              motions: motions,
+              button: button,
+              original: token
+            });
+          } else {
+            console.log('Single motion detected:', motionName);
+            chips.push({
+              type: 'motion',
+              motion: motionName,
+              button: button,
+              original: token
+            });
+          }
+          motionFound = true;
+          break;
+        }
+      }
+      
+      if (motionFound) continue;
+      
+      // Check for single direction + button
+      const match = token.match(/^([1-9]*)([^1-9]*)$/);
+      if (match) {
+        const [, numpadPart, buttonPart] = match;
+        console.log('Direction + button detected:', numpadPart, '+', buttonPart);
+        chips.push({
+          type: 'direction',
+          directions: numpadPart.split('').map(n => numpadToDirection[n]).filter(Boolean),
+          button: buttonPart,
+          original: token
+        });
+      }
+    }
+    
+    console.log('Final parsed chips:', chips);
+    console.log('=== END parseNumpadNotation DEBUG ===');
+    return chips;
+  }
+
+  function convertNumpadToChips(text) {
+    console.log('=== convertNumpadToChips DEBUG ===');
+    const parsed = parseNumpadNotation(text);
+    console.log('Parsed result:', parsed);
+    clearOverlay();
+    
+    for (const chip of parsed) {
+      console.log('Processing chip:', chip);
+      let html = '';
+      
+      if (chip.type === 'motion') {
+        console.log('Creating single motion chip:', chip.motion);
+        // Create motion input chip with image
+        const motionImage = `<img class="img" src="images/${chip.motion}.png" alt="${chip.motion}">`;
+        html = `${motionImage} + ${buttonHTML(0, chip.button)}`;
+      } else if (chip.type === 'double_motion') {
+        console.log('Creating double motion chip:', chip.motions);
+        // Create double motion input chip with two images
+        const motionImages = chip.motions.map(motion => 
+          `<img class="img" src="images/${motion}.png" alt="${motion}">`
+        ).join(' ');
+        html = `${motionImages} + ${buttonHTML(0, chip.button)}`;
+      } else if (chip.type === 'direction' && chip.directions.length > 0) {
+        console.log('Creating direction chip:', chip.directions);
+        // Create direction + button chip
+        const directionHTML = chip.directions.map(dir => dirToImg(dir)).join('');
+        html = `${directionHTML} + ${buttonHTML(0, chip.button)}`;
+      } else {
+        console.log('Creating simple button chip');
+        // Simple button chip
+        html = buttonHTML(0, chip.button);
+      }
+      
+      console.log('Final HTML:', html);
+      addChipElHTML(html);
+    }
+    console.log('=== END convertNumpadToChips DEBUG ===');
+  }
+
+  // Add keyboard input interface
+  function setupKeyboardInput() {
+    const inputContainer = document.createElement('div');
+    inputContainer.style.position = 'fixed';
+    inputContainer.style.bottom = '10px';
+    inputContainer.style.right = '10px';
+    inputContainer.style.background = 'white';
+    inputContainer.style.padding = '10px';
+    inputContainer.style.border = '1px solid #ccc';
+    inputContainer.style.borderRadius = '5px';
+    inputContainer.style.zIndex = '1000';
+    
+    inputContainer.innerHTML = `
+      <h4 style="margin: 0 0 10px 0;">Type Numpad Notation</h4>
+      <input type="text" id="numpadInput" placeholder="e.g., 2L 5M 236H" style="width: 200px; margin-right: 5px;">
+      <button id="convertBtn" class="btn">Convert</button>
+      <div class="tiny" style="margin-top: 5px;">Use spaces as separators</div>
+    `;
+    
+    document.body.appendChild(inputContainer);
+    
+    $('#convertBtn')?.addEventListener('click', () => {
+      const input = $('#numpadInput');
+      if (input?.value) {
+        convertNumpadToChips(input.value);
+        input.value = '';
+      }
+    });
+    
+    $('#numpadInput')?.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        $('#convertBtn')?.click();
+      }
+    });
+  }
+  
+  // Set up keyboard input when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupKeyboardInput);
+  } else {
+    setupKeyboardInput();
+  }
+
+  // Add notation mode change event listener
+  document.addEventListener('change', function(e) {
+    if (e.target.name === 'notationMode') {
+      const p = profiles[activeProfile];
+      p.notationMode = e.target.value;
+      saveProfiles();
+      // Refresh overlay to apply new notation mode
+      refreshOverlayNotation();
+    }
+  });
+
+  function refreshOverlayNotation() {
+    const p = profiles[activeProfile];
+    const chips = [...overlay.querySelectorAll('.chip')];
+    
+    // Store original chip data for reconstruction
+    const chipData = chips.map(chip => ({
+      originalHtml: chip.dataset.originalHtml || chip.innerHTML, // Store original image HTML
+      currentHtml: chip.innerHTML,
+      bg: chip.style.backgroundColor,
+      isNumpad: chip.dataset.isNumpad === 'true'
+    }));
+    
+    clearOverlay();
+    
+    chipData.forEach(data => {
+      if (p.notationMode === 'numpad') {
+        // Convert to numpad notation from original image HTML
+        const numpadNotation = chipToNumpadNotation(data.originalHtml);
+        const chip = addChipElHTML(numpadNotation, data.bg);
+        chip.dataset.isNumpad = 'true';
+        chip.dataset.originalHtml = data.originalHtml; // Preserve original for switching back
+      } else {
+        // Convert back to images - use original HTML
+        const chip = addChipElHTML(data.originalHtml, data.bg);
+        chip.dataset.isNumpad = 'false';
+        chip.dataset.originalHtml = data.originalHtml; // Keep original reference
+      }
+    });
   }
 })();
