@@ -15,6 +15,7 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:
 .chip.capture{box-shadow:0 0 0 2px var(--accent), 0 0 14px rgba(58,76,255,.6);position:relative}
 .chip.capture::after{content:"CAPTURE";position:absolute;top:-10px;right:-10px;background:var(--accent);color:#fff;font-size:10px;font-weight:900;padding:2px 6px;border-radius:999px}
 @keyframes pulse{from{filter:saturate(1)}to{filter:saturate(1.6)}} .chip.capture{animation:pulse .9s ease-in-out infinite alternate}
+.chip.pending-insertion{background:rgba(154,163,178,.2);border:1px dashed rgba(154,163,178,.4);opacity:.8;animation:pulse 1.5s ease-in-out infinite alternate}
 .img{height:var(--chip-img-h);vertical-align:middle}
 .sep{font-weight:900;opacity:.9;padding:0 6px;user-select:none}
 .global-override .chip{background:var(--chip-bg)!important; color:var(--chip-text)!important}
@@ -253,3 +254,52 @@ body.fullwidth { --overlay-width: 100vw; }
   caret-color: transparent;  /* hides the blinking bar if some UA still tries */
 }
 #overlay:focus { outline: none; }
+
+/* Context menu for chip insertion */
+.context-menu {
+  position: fixed;
+  z-index: 10001;
+  background: #151821;
+  border: 1px solid #2a2f3a;
+  color: #e7ebf3;
+  border-radius: 8px;
+  padding: 4px 0;
+  box-shadow: 0 8px 26px rgba(0,0,0,.45);
+  min-width: 160px;
+  display: none;
+}
+
+.context-menu-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-menu-item:hover {
+  background: #2a3040;
+}
+
+.context-menu-item.disabled {
+  color: #666;
+  cursor: not-allowed;
+}
+
+.context-menu-item.disabled:hover {
+  background: transparent;
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: #2a2f3a;
+  margin: 4px 0;
+}
+
+/* Pending insertion indicator */
+.chip.pending-insertion {
+  opacity: 0.6;
+  border: 2px dashed #4c8dff;
+  background: rgba(76, 141, 255, 0.1);
+}

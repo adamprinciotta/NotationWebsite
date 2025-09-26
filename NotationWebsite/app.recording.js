@@ -526,6 +526,10 @@ function startGrading(steps, chipEls, state){
 
   // Render all chips (final snapshot) – keeps them visible during playback
   function applyFinalSnapshot(chipsHTML){
+    // Suppress history during playback rendering
+    const wasSuppressed = CO.suppressHistory;
+    CO.suppressHistory = true;
+    
     CO.overlay.innerHTML='';
     chipsHTML.forEach((html,i)=>{
       if(CO.overlay.children.length>0){
@@ -547,6 +551,9 @@ function startGrading(steps, chipEls, state){
 
       CO.overlay.appendChild(c);
     });
+    
+    // Restore previous suppress state
+    CO.suppressHistory = wasSuppressed;
   }
 
   // Save/Load script JSON

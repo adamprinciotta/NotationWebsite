@@ -1,4 +1,4 @@
-
+﻿
 /* Combo Overlay – Core (v13.7)
    Responsibilities:
    - UI wiring (profiles, colors, PNG export, OBS URL)
@@ -41,12 +41,494 @@
   const DEFAULT_BUTTON_LABELS=['L','M','H','S','LB','RB','LT','RT','Select','Start','L3','R3','D↑','D↓','D←','D→'];
   const DEFAULT_BUTTON_COLORS=Array(16).fill('#000000');
   const DEFAULT_BUTTON_BG=Array(16).fill('#f5f5f5');
-  function defaultProfile(){return {name:'Default',buttonLabels:[...DEFAULT_BUTTON_LABELS],buttonColors:[...DEFAULT_BUTTON_COLORS],buttonBgColors:[...DEFAULT_BUTTON_BG],deadzone:0.5,chordWindow:80,repeatLockout:110,holdMs:250,motionWindow:700,motionCoupleMs:130,chargeFrames:30,chargeWindow:180,facing:'right',resetAction:'none',separator:'>'}};
+  function defaultProfile(){return {name:'Default',buttonLabels:[...DEFAULT_BUTTON_LABELS],buttonColors:[...DEFAULT_BUTTON_COLORS],buttonBgColors:[...DEFAULT_BUTTON_BG],deadzone:0.5,chordWindow:80,repeatLockout:110,holdMs:250,motionWindow:700,motionCoupleMs:130,chargeFrames:30,chargeWindow:180,mashWindowMs:350,facing:'right',resetAction:'none',separator:'>'}};
   function loadProfiles(){try{const raw=localStorage.getItem(LS_PROFILES); if(!raw) return [defaultProfile()]; const arr=JSON.parse(raw); return Array.isArray(arr)&&arr.length?arr:[defaultProfile()];}catch{return [defaultProfile()];}}
   function saveProfiles(){localStorage.setItem(LS_PROFILES, JSON.stringify(profiles));}
   function loadActive(){const v=parseInt(localStorage.getItem(LS_ACTIVE)||'0',10);return Number.isFinite(v)&&v>=0&&v<profiles.length? v:0;}
   function saveActive(){localStorage.setItem(LS_ACTIVE, String(activeProfile));}
   let profiles=loadProfiles(); let activeProfile=loadActive();
+  
+  /* ===== Undo/Redo Manager ===== */
+  const history = { past:[], future:[], max:200 };
+  let suppressHistory = false;
+  let historyDebounceTimer = null;
+
+  function snapshotOverlay(){
+    const chips = [...overlay.querySelectorAll('.chip')];
+    const separators = [...overlay.querySelectorAll('.sep')];
+    return {
+      chips: chips.map(chip => chip.innerHTML),
+      separators: separators.map(sep => sep.textContent),
+      timestamp: performance.now()
+    };
+  }
+
+  function restoreOverlay(state){
+    // Suppress history during restore
+    const wasSuppressed = suppressHistory;
+    suppressHistory = true;
+    
+    // Clear current overlay
+    overlay.innerHTML = '';
+    buffer.length = 0;
+    bus.emit('overlay:clear');
+    
+    // Rebuild overlay from state
+    const { chips, separators } = state;
+    let chipIndex = 0;
+    let sepIndex = 0;
+    
+    // Interleave chips and separators (assuming they alternate)
+    for(let i = 0; i < chips.length + separators.length; i++){
+      if(i % 2 === 0 && chipIndex < chips.length){
+        // Add chip
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.innerHTML = chips[chipIndex];
+        chip.tabIndex = 0;
+        chip.addEventListener('click', (ev)=>{ selectChip(chip); openPopover(chip); ev.stopPropagation(); });
+        chip.addEventListener('dblclick', (ev)=>{ selectChip(chip); openPopover(chip, true); ev.stopPropagation(); });
+        overlay.appendChild(chip);
+        bus.emit('chip:add', chip);
+        chipIndex++;
+      } else if(sepIndex < separators.length){
+        // Add separator
+        const sep = document.createElement('span');
+        sep.className = 'sep';
+        sep.textContent = separators[sepIndex];
+        overlay.appendChild(sep);
+        sepIndex++;
+      }
+    }
+    
+    rebuildBuffer();
+    
+    // Restore previous suppress state
+    suppressHistory = wasSuppressed;
+  }
+
+  function pushHistory(label){
+    if(suppressHistory) return;
+    
+    // Clear debounce timer
+    if(historyDebounceTimer){
+      clearTimeout(historyDebounceTimer);
+    }
+    
+    // Debounce rapid changes
+    historyDebounceTimer = setTimeout(() => {
+      const snapshot = snapshotOverlay();
+      snapshot.label = label;
+      
+      // Add to past, clear future
+      history.past.push(snapshot);
+      history.future = [];
+      
+      // Trim to max size
+      if(history.past.length > history.max){
+        history.past.shift();
+      }
+      
+      console.log(`[undo] Pushed: ${label}`);
+    }, 250);
+  }
+
+  function undo(){
+    if(history.past.length === 0) return;
+    
+    // Move current state to future
+    const current = snapshotOverlay();
+    current.label = 'Current';
+    history.future.unshift(current);
+    
+    // Restore previous state
+    const previous = history.past.pop();
+    restoreOverlay(previous);
+    
+    setStatus(`Undid: ${previous.label || 'Unknown'}`);
+    console.log(`[undo] Undid: ${previous.label || 'Unknown'}`);
+  }
+
+  function redo(){
+    if(history.future.length === 0) return;
+    
+    // Move current state to past
+    const current = snapshotOverlay();
+    current.label = 'Current';
+    history.past.push(current);
+    
+    // Restore future state
+    const next = history.future.shift();
+    restoreOverlay(next);
+    
+    setStatus(`Redid: ${next.label || 'Unknown'}`);
+    console.log(`[undo] Redid: ${next.label || 'Unknown'}`);
+  }
+  
+  /* ===== Context Menu for Chip Insertion ===== */
+  let contextMenu = null;
+  let pendingInsertion = null;
+  let insertPosition = null;
+  let insertMode = null; // 'left', 'right', 'between'
+  let insertSide = null; // 'left', 'right'
+  let clickPosition = null; // Store click coordinates for proper insertion
+
+  function createContextMenu() {
+    if (contextMenu) return contextMenu;
+    
+    contextMenu = document.createElement('div');
+    contextMenu.className = 'context-menu';
+    contextMenu.innerHTML = `
+      <div class="context-menu-item" data-action="insert-custom">
+        <span>Insert here…</span>
+        <span style="margin-left: auto; color: #9aa3b2;">Custom text</span>
+      </div>
+      <div class="context-menu-item" data-action="insert-controller">
+        <span>Insert here…</span>
+        <span style="margin-left: auto; color: #9aa3b2;">From controller</span>
+      </div>
+      <div class="context-menu-separator"></div>
+      <div class="context-menu-item" data-action="insert-left">
+        <span>Insert left</span>
+      </div>
+      <div class="context-menu-item" data-action="insert-right">
+        <span>Insert right</span>
+      </div>
+    `;
+    
+    document.body.appendChild(contextMenu);
+    
+    // Add event listeners
+    contextMenu.addEventListener('click', (e) => {
+      const item = e.target.closest('.context-menu-item');
+      if (!item) return;
+      
+      const action = item.dataset.action;
+      handleContextMenuAction(action);
+      hideContextMenu();
+    });
+    
+    return contextMenu;
+  }
+
+  function showContextMenu(x, y, chip = null) {
+    createContextMenu();
+    
+    // Store click position for proper insertion calculation
+    clickPosition = { x, y };
+    
+    // Update menu based on context
+    const betweenItems = contextMenu.querySelectorAll('[data-action="insert-custom"], [data-action="insert-controller"]');
+    const chipItems = contextMenu.querySelectorAll('[data-action="insert-left"], [data-action="insert-right"]');
+    
+    if (chip) {
+      // Right-clicked on a chip
+      betweenItems.forEach(item => item.style.display = 'none');
+      chipItems.forEach(item => item.style.display = 'flex');
+      insertMode = 'chip';
+      insertPosition = chip;
+    } else {
+      // Right-clicked in empty space
+      betweenItems.forEach(item => item.style.display = 'flex');
+      chipItems.forEach(item => item.style.display = 'none');
+      insertMode = 'between';
+      insertPosition = null;
+    }
+    
+    contextMenu.style.left = x + 'px';
+    contextMenu.style.top = y + 'px';
+    contextMenu.style.display = 'block';
+  }
+
+  function hideContextMenu() {
+    if (contextMenu) {
+      contextMenu.style.display = 'none';
+    }
+  }
+
+  function handleContextMenuAction(action) {
+    switch (action) {
+      case 'insert-custom':
+        if (insertMode === 'between') {
+          insertCustomTextBetween();
+        } else if (insertMode === 'chip') {
+          insertCustomTextAtChip();
+        }
+        break;
+      case 'insert-controller':
+        if (insertMode === 'between') {
+          insertFromControllerBetween();
+        } else if (insertMode === 'chip') {
+          insertFromControllerAtChip();
+        }
+        break;
+      case 'insert-left':
+        insertFromControllerAtChip('left');
+        break;
+      case 'insert-right':
+        insertFromControllerAtChip('right');
+        break;
+    }
+  }
+
+  function insertCustomTextBetween() {
+    const text = prompt('Enter chip text:');
+    if (!text || !text.trim()) {
+      hideContextMenu();
+      return;
+    }
+    
+    const html = `<span style="color:${getComputedStyle(document.documentElement).getPropertyValue('--chip-text').trim()}">${escapeHtml(text.trim())}</span>`;
+    const index = getInsertionIndex();
+    insertChipAt(index, html);
+    hideContextMenu();
+  }
+
+  function insertCustomTextAtChip() {
+    const text = prompt('Enter chip text:');
+    if (!text || !text.trim()) {
+      hideContextMenu();
+      return;
+    }
+    
+    const html = `<span style="color:${getComputedStyle(document.documentElement).getPropertyValue('--chip-text').trim()}">${escapeHtml(text.trim())}</span>`;
+    const chipIndex = getChipIndex(insertPosition);
+    insertChipAt(chipIndex, html);
+    hideContextMenu();
+  }
+
+  function insertFromControllerBetween() {
+    insertMode = 'controller-between';
+    insertPosition = getInsertionIndex();
+    createPendingInsertion();
+    setStatus('Controller capture: press a button to insert chip...');
+  }
+
+  function insertFromControllerAtChip(side = 'left') {
+    insertMode = 'controller-chip';
+    insertPosition = insertPosition;
+    insertSide = side;
+    createPendingInsertion();
+    setStatus(`Controller capture: press a button to insert ${side} of chip...`);
+  }
+
+  function createPendingInsertion() {
+    // Create a placeholder chip to show where insertion will happen
+    const placeholder = document.createElement('span');
+    placeholder.className = 'chip pending-insertion';
+    placeholder.innerHTML = '<span style="color:#9aa3b2">Press controller button...</span>';
+    placeholder.tabIndex = 0;
+    
+    let index;
+    if (insertMode === 'controller-between') {
+      index = insertPosition;
+    } else if (insertMode === 'controller-chip') {
+      const chipIndex = getChipIndex(insertPosition);
+      const side = insertSide || 'left';
+      index = chipIndex + (side === 'right' ? 1 : 0);
+    } else {
+      index = 0;
+    }
+    
+    // Insert the placeholder using the same logic as regular chips
+    const chips = [...overlay.querySelectorAll('.chip')];
+    
+    if (index === 0) {
+      // Insert at the beginning
+      overlay.insertBefore(placeholder, overlay.firstChild);
+      // Add separator after the placeholder if there are other chips
+      if (chips.length > 0) {
+        addSeparator();
+      }
+    } else if (index >= chips.length) {
+      // Insert at the end - add separator first, then placeholder (like addChipElHTML)
+      if (overlay.children.length > 0) {
+        addSeparator();
+      }
+      overlay.appendChild(placeholder);
+    } else {
+      // Insert in the middle
+      const targetChip = chips[index];
+      
+      // Insert the placeholder before the target chip
+      overlay.insertBefore(placeholder, targetChip);
+      
+      // Add separator between the inserted placeholder and the target chip
+      const separator = document.createElement('span');
+      separator.className = 'sep';
+      separator.textContent = (profiles[activeProfile].separator || '>');
+      overlay.insertBefore(separator, targetChip);
+    }
+    
+    pendingInsertion = placeholder;
+  }
+
+  function getInsertionIndex() {
+    // Find the index where we should insert based on click position
+    const chips = [...overlay.querySelectorAll('.chip')];
+    if (chips.length === 0) return 0;
+    
+    if (!clickPosition) {
+      // Fallback to end if no click position stored
+      return chips.length;
+    }
+    
+    // Find the chip that the click position is closest to horizontally
+    let closestIndex = 0;
+    let minDistance = Infinity;
+    
+    for (let i = 0; i < chips.length; i++) {
+      const chip = chips[i];
+      const rect = chip.getBoundingClientRect();
+      const chipCenterX = rect.left + rect.width / 2;
+      const distance = Math.abs(clickPosition.x - chipCenterX);
+      
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestIndex = i;
+      }
+    }
+    
+    // Determine if we should insert before or after the closest chip
+    const closestChip = chips[closestIndex];
+    const rect = closestChip.getBoundingClientRect();
+    const shouldInsertAfter = clickPosition.x > (rect.left + rect.width / 2);
+    
+    return shouldInsertAfter ? closestIndex + 1 : closestIndex;
+  }
+
+  function getChipIndex(chip) {
+    const chips = [...overlay.querySelectorAll('.chip')];
+    return chips.indexOf(chip);
+  }
+
+  function insertChipAt(index, html, isPlaceholder = false) {
+    // Remove any existing pending insertion
+    if (pendingInsertion) {
+      pendingInsertion.remove();
+      pendingInsertion = null;
+    }
+    
+    // Create the chip element
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.innerHTML = html;
+    chip.tabIndex = 0;
+    
+    if (!isPlaceholder) {
+      // Add event listeners for real chips
+      chip.addEventListener('click', (ev)=>{ selectChip(chip); openPopover(chip); ev.stopPropagation(); });
+      chip.addEventListener('dblclick', (ev)=>{ selectChip(chip); openPopover(chip, true); ev.stopPropagation(); });
+    }
+    
+    // Get current chips
+    const chips = [...overlay.querySelectorAll('.chip')];
+    
+    if (index === 0) {
+      // Insert at the beginning
+      overlay.insertBefore(chip, overlay.firstChild);
+      // Add separator after the chip if there are other chips
+      if (chips.length > 0) {
+        addSeparator();
+      }
+    } else if (index >= chips.length) {
+      // Insert at the end - add separator first, then chip (like addChipElHTML)
+      if (overlay.children.length > 0) {
+        addSeparator();
+      }
+      overlay.appendChild(chip);
+    } else {
+      // Insert in the middle
+      const targetChip = chips[index];
+      
+      // Insert the chip before the target chip
+      overlay.insertBefore(chip, targetChip);
+      
+      // Add separator between the inserted chip and the target chip
+      const separator = document.createElement('span');
+      separator.className = 'sep';
+      separator.textContent = (profiles[activeProfile].separator || '>');
+      overlay.insertBefore(separator, targetChip);
+    }
+    
+    if (!isPlaceholder) {
+      rebuildBuffer();
+      bus.emit('chip:add', chip);
+      pushHistory('Insert chip');
+    }
+    
+    return chip;
+  }
+
+  function completeInsertionFromController(btnIndex) {
+    if (!insertMode || !insertMode.startsWith('controller')) return;
+    
+    // Build chip HTML using existing logic
+    const dirTok = captureDirTok || snapshotDirection() || 'n';
+    const motionHTML = detectMotionForButton();
+    const p = profiles[activeProfile];
+    let finalLabel = (p.buttonLabels[btnIndex] || `#${btnIndex}`);
+    if (dirTok === 'u' && !/^j\./i.test(finalLabel)) finalLabel = 'j.' + finalLabel;
+    
+    let html;
+    if (motionHTML) {
+      html = `${motionHTML} ${buttonHTML(btnIndex, finalLabel)}`;
+    } else if (dirTok && dirTok !== 'n') {
+      const dirHTML = dirToImg(dirTok) || dirTok.toUpperCase();
+      html = `${dirHTML} + ${buttonHTML(btnIndex, finalLabel)}`;
+    } else {
+      html = buttonHTML(btnIndex, finalLabel);
+    }
+    
+    // If there's a pending insertion placeholder, replace it
+    if (pendingInsertion) {
+      const chip = pendingInsertion;
+      chip.innerHTML = html;
+      chip.className = 'chip';
+      chip.tabIndex = 0;
+      
+      // Add event listeners for the real chip
+      chip.addEventListener('click', (ev)=>{ selectChip(chip); openPopover(chip); ev.stopPropagation(); });
+      chip.addEventListener('dblclick', (ev)=>{ selectChip(chip); openPopover(chip, true); ev.stopPropagation(); });
+      
+      // Clean up insertion state
+      pendingInsertion = null;
+      insertMode = null;
+      insertPosition = null;
+      insertSide = null;
+      clickPosition = null;
+      
+      rebuildBuffer();
+      bus.emit('chip:add', chip);
+      pushHistory('Insert chip');
+      setStatus('Chip inserted');
+      hideContextMenu();
+      return;
+    }
+    
+    // Fallback: determine insertion index and insert normally
+    let index;
+    if (insertMode === 'controller-between') {
+      index = insertPosition;
+    } else if (insertMode === 'controller-chip') {
+      const chipIndex = getChipIndex(insertPosition);
+      const side = insertSide || 'left';
+      index = chipIndex + (side === 'right' ? 1 : 0);
+    } else {
+      index = 0;
+    }
+    
+    // Insert the chip
+    insertChipAt(index, html);
+    
+    // Clean up insertion state
+    insertMode = null;
+    insertPosition = null;
+    insertSide = null;
+    clickPosition = null;
+    setStatus('Chip inserted');
+    hideContextMenu();
+  }
   
   let resetCaptureActive = false;
 
@@ -136,6 +618,7 @@ function removeJPrefixBulk(){
   if(!selectedChips.size) return;
   for(const ch of selectedChips) removeJPrefix(ch);
   window.ComboOverlay?.rebuildBuffer?.();
+  pushHistory(`Remove j. from ${selectedChips.size} chips`);
 }
 
 
@@ -349,17 +832,26 @@ function addJPrefixBulk(){
   if(!selectedChips.size) return;
   for(const ch of selectedChips) addJPrefix(ch);
   window.ComboOverlay?.rebuildBuffer?.();
+  pushHistory(`Add j. to ${selectedChips.size} chips`);
 }
 
 function deleteSelectedBulk(){
   if(!selectedChips.size) return;
   // remove in DOM order left→right to keep separators clean
   const arr = Array.from(selectedChips).sort((a,b)=>a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING? -1: 1);
-  for(const ch of arr) removeChip(ch);
+  for(const ch of arr) {
+    const prev = ch.previousSibling, next = ch.nextSibling; 
+    if(prev && prev.classList && prev.classList.contains('sep')) prev.remove(); 
+    else if(next && next.classList && next.classList.contains('sep')) next.remove(); 
+    ch.remove(); 
+    if(currentSelectedChip===ch) currentSelectedChip=null; 
+    bus.emit('chip:remove', ch);
+  }
   selectedChips.clear();
   currentSelectedChip = null;
   updateSelectedStyles();
-  window.ComboOverlay?.rebuildBuffer?.();
+  rebuildBuffer();
+  pushHistory(`Delete ${arr.length} chips`);
 }
 
 function clearMotionBulk(){
@@ -369,6 +861,7 @@ function clearMotionBulk(){
     });
   }
   window.ComboOverlay?.rebuildBuffer?.();
+  pushHistory(`Clear motion from ${selectedChips.size} chips`);
 }
 
 function clearDirBulk(){
@@ -382,6 +875,7 @@ function clearDirBulk(){
     if(span){ span.textContent=span.textContent.trim().replace(/^j\./i,''); }
   }
   window.ComboOverlay?.rebuildBuffer?.();
+  pushHistory(`Clear direction from ${selectedChips.size} chips`);
 }
 
 /* Rename tail text for all (keeps icons intact) */
@@ -392,6 +886,7 @@ function renameTailBulk(newTxt){
     if(lastSpan) lastSpan.textContent = newTxt;
   }
   window.ComboOverlay?.rebuildBuffer?.();
+  pushHistory(`Rename tail to "${newTxt}" on ${selectedChips.size} chips`);
 }
 
 /* Utility: find chip at event target (click bubbling) */
@@ -428,7 +923,6 @@ function applyCssKnobs(){
 
 
 // ===== Mash collapse config/state =====
-const MASH_WINDOW_MS = 350;  // time window for a rapid mash burst
 const mashState = {
   key: null,         // normalized signature for the input (dir/motion + button)
   firstChip: null,   // the chip element to keep/rename
@@ -469,9 +963,10 @@ function mashifyChip(chipEl){
 function updateMashAfterAdd(newHtml, newChip){
   const key = normalizeHTML(newHtml);
   const t   = now();
+  const mashWindow = profiles[activeProfile].mashWindowMs || 350;
 
   // continuing same-burst?
-  if(mashState.key === key && (t - mashState.firstTime) <= MASH_WINDOW_MS){
+  if(mashState.key === key && (t - mashState.firstTime) <= mashWindow){
     mashState.count += 1;
     mashState.firstTime = t;
 
@@ -544,6 +1039,7 @@ function renderResetLabel(){
     setInputValue('#motionCoupleMs', p.motionCoupleMs);
     setInputValue('#chargeFrames',   p.chargeFrames);
     setInputValue('#chargeWindow',   p.chargeWindow);
+    setInputValue('#mashWindowMs',   p.mashWindowMs ?? 350);
     setInputValue('#indicatorMs', p.indicatorMs ?? 1000);
 
     renderResetLabel();
@@ -560,7 +1056,7 @@ function renderResetLabel(){
   newProfileBtn?.addEventListener('click',()=>{profiles.push(defaultProfile());activeProfile=profiles.length-1;saveProfiles();saveActive();refreshProfileUI();});
   dupProfileBtn?.addEventListener('click',()=>{const copy=JSON.parse(JSON.stringify(profiles[activeProfile])); copy.name=(copy.name||'Profile')+' (copy)'; profiles.push(copy); activeProfile=profiles.length-1; saveProfiles(); saveActive(); refreshProfileUI();});
   delProfileBtn?.addEventListener('click',()=>{ if(profiles.length<=1) return; profiles.splice(activeProfile,1); activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI();});
-  saveProfileBtn?.addEventListener('click',()=>{ const p=profiles[activeProfile]; p.name=profileName?.value.trim()||`Profile ${activeProfile+1}`; p.facing=facingSel?.value||p.facing; p.resetAction=resetSel?.value||p.resetAction; p.separator=separatorInp.value||'>'; p.deadzone=parseFloat($('#deadzone')?.value)||p.deadzone; p.chordWindow=parseInt($('#chordWindow')?.value)||p.chordWindow; p.repeatLockout=parseInt($('#repeatLockout')?.value)||p.repeatLockout; p.holdMs=parseInt($('#holdMs')?.value)||p.holdMs; p.motionWindow=parseInt($('#motionWindow')?.value)||p.motionWindow; p.motionCoupleMs=parseInt($('#motionCoupleMs')?.value)||p.motionCoupleMs; p.chargeFrames=parseInt($('#chargeFrames')?.value)||p.chargeFrames; p.chargeWindow=parseInt($('#chargeWindow')?.value)||p.chargeWindow; saveProfiles(); refreshProfileUI();});
+  saveProfileBtn?.addEventListener('click',()=>{ const p=profiles[activeProfile]; p.name=profileName?.value.trim()||`Profile ${activeProfile+1}`; p.facing=facingSel?.value||p.facing; p.resetAction=resetSel?.value||p.resetAction; p.separator=separatorInp.value||'>'; p.deadzone=parseFloat($('#deadzone')?.value)||p.deadzone; p.chordWindow=parseInt($('#chordWindow')?.value)||p.chordWindow; p.repeatLockout=parseInt($('#repeatLockout')?.value)||p.repeatLockout; p.holdMs=parseInt($('#holdMs')?.value)||p.holdMs; p.motionWindow=parseInt($('#motionWindow')?.value)||p.motionWindow; p.motionCoupleMs=parseInt($('#motionCoupleMs')?.value)||p.motionCoupleMs; p.chargeFrames=parseInt($('#chargeFrames')?.value)||p.chargeFrames; p.chargeWindow=parseInt($('#chargeWindow')?.value)||p.chargeWindow; p.mashWindowMs=parseInt($('#mashWindowMs')?.value)||350; saveProfiles(); refreshProfileUI();});
 
   exportBtn?.addEventListener('click',()=>{const blob=new Blob([JSON.stringify(profiles,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='gamepad_profiles.json'; a.click(); URL.revokeObjectURL(url);});
   importBtn?.addEventListener('click',()=>importInput?.click());
@@ -586,6 +1082,7 @@ document.addEventListener('input',(e)=>{
 
   if (t===separatorInp){ p.separator=separatorInp.value||'>'; rebuildBuffer(); }
   if (t===useGlobalColors){ applyCssKnobs(); }
+  if (t?.id === 'mashWindowMs'){ p.mashWindowMs = parseInt(t.value) || 350; }
   saveProfiles();
 });
 
@@ -594,7 +1091,18 @@ document.addEventListener('input',(e)=>{
   ;['dragenter','dragover','drop','dragleave'].forEach(evt=>window.addEventListener(evt,(e)=>{ if(evt!=='drop') e.preventDefault(); if(evt==='drop'){ const f=e.dataTransfer?.files?.[0]; if(f){ f.text().then(txt=>{ try{const arr=JSON.parse(txt); if(Array.isArray(arr)&&arr.length){ profiles=arr; activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI(); setStatus('Imported profile (drag & drop)'); } }catch(err){ console.warn('DnD import error',err); } }); } } }));
 
   /* ===== Overlay helpers ===== */
-  function addSeparator(){ if(overlay.children.length){const s=document.createElement('span');s.className='sep'; s.textContent=(profiles[activeProfile].separator||'>'); overlay.appendChild(s);} }
+  function addSeparator(){ 
+    if(overlay.children.length){
+      // Check if the last child is already a separator
+      const lastChild = overlay.lastElementChild;
+      if(!lastChild || !lastChild.classList.contains('sep')){
+        const s=document.createElement('span');
+        s.className='sep'; 
+        s.textContent=(profiles[activeProfile].separator||'>'); 
+        overlay.appendChild(s);
+      }
+    }
+  }
   function currentSeparator(){ return ' ' + (profiles[activeProfile].separator||'>') + ' '; }
   function rebuildBuffer(){ const chips=[...overlay.querySelectorAll('.chip')]; buffer = chips.map(ch=>ch.innerText.trim()); }
   let buffer=[];
@@ -607,10 +1115,11 @@ document.addEventListener('input',(e)=>{
     c.addEventListener('dblclick', (ev)=>{ selectChip(c); openPopover(c, true); ev.stopPropagation(); });
     overlay.appendChild(c); overlay.scrollLeft=overlay.scrollWidth; rebuildBuffer();
     bus.emit('chip:add', c);
+    pushHistory('Add chip');
     return c;
   }
 
-  function clearOverlay(){ overlay.innerHTML=''; buffer.length=0; activeButtonChips.clear(); lastCharged={tok:null,at:0}; closePopover(); currentSelectedChip=null; editCapture=false; bus.emit('overlay:clear'); }
+  function clearOverlay(){ overlay.innerHTML=''; buffer.length=0; activeButtonChips.clear(); lastCharged={tok:null,at:0}; closePopover(); currentSelectedChip=null; editCapture=false; bus.emit('overlay:clear'); pushHistory('Clear overlay'); }
   $('#clearBtn')?.addEventListener('click', clearOverlay);
   $('#copyBtn')?.addEventListener('click', ()=>{ const txt=buffer.join(currentSeparator().trim()); navigator.clipboard?.writeText(txt); setStatus('Copied text.'); });
   let modeLive=true; $('#toggleMode')?.addEventListener('click',()=>{ modeLive=!modeLive; $('#toggleMode').textContent='Mode: '+(modeLive?'Live':'Record'); setStatus('Mode toggled.'); });
@@ -759,6 +1268,14 @@ function handleButtons(gp){
           continue;
         }
 
+        // Insertion capture mode: create chip at pending position
+        if(insertMode && insertMode.startsWith('controller') && i<12){
+          completeInsertionFromController(i);
+          lastButtonTime.set(i,t);
+          prevButtons[i]=pressed;
+          continue;
+        }
+
         // Quick “j.” prefix via D-pad UP button index (12) when editing
         if(currentSelectedChip && i===12 && !editCapture){
           addJPrefix(currentSelectedChip);
@@ -859,7 +1376,7 @@ function handleButtons(gp){
 
   function addJPrefix(chip){ const lastSpan=chip.querySelector('span:last-of-type'); if(!lastSpan) return; const cur=lastSpan.textContent.trim(); if(cur.toLowerCase().startsWith('j.')) return; lastSpan.textContent='j.'+cur; rebuildBuffer(); }
 
-  function replaceChipFromController(btnIndex){ if(!currentSelectedChip) return; const dirTok = editCapture ? captureDirTok : (snapshotDirection()||'n'); const motionHTML = detectMotionForButton(); const p=profiles[activeProfile]; let finalLabel=(p.buttonLabels[btnIndex]||`#${btnIndex}`); if(dirTok==='u' && !/^j\./i.test(finalLabel)) finalLabel='j.'+finalLabel; let html; if(motionHTML){ html = `${motionHTML} ${buttonHTML(btnIndex, finalLabel)}`; } else if(dirTok && dirTok!=='n'){ const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase(); html = `${dirHTML} + ${buttonHTML(btnIndex, finalLabel)}`; } else { html = buttonHTML(btnIndex, finalLabel); } currentSelectedChip.innerHTML=html; rebuildBuffer(); closePopover(); bus.emit('chip:replace', currentSelectedChip); }
+  function replaceChipFromController(btnIndex){ if(!currentSelectedChip) return; const dirTok = editCapture ? captureDirTok : (snapshotDirection()||'n'); const motionHTML = detectMotionForButton(); const p=profiles[activeProfile]; let finalLabel=(p.buttonLabels[btnIndex]||`#${btnIndex}`); if(dirTok==='u' && !/^j\./i.test(finalLabel)) finalLabel='j.'+finalLabel; let html; if(motionHTML){ html = `${motionHTML} ${buttonHTML(btnIndex, finalLabel)}`; } else if(dirTok && dirTok!=='n'){ const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase(); html = `${dirHTML} + ${buttonHTML(btnIndex, finalLabel)}`; } else { html = buttonHTML(btnIndex, finalLabel); } currentSelectedChip.innerHTML=html; rebuildBuffer(); closePopover(); bus.emit('chip:replace', currentSelectedChip); pushHistory('Replace chip'); }
 
   function mutateLabelText(chipEl, oldText, newText){ const spans = chipEl.querySelectorAll('span'); for(let i = spans.length - 1; i >= 0; i--){ const sp = spans[i]; if(sp.textContent.trim() === oldText){ sp.textContent = newText; return; } } chipEl.innerHTML = chipEl.innerHTML.replace(new RegExp(escapeRegExp(oldText) + '(?!.*' + escapeRegExp(oldText) + ')'), ' ' + newText + ' '); }
   function escapeRegExp(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -923,6 +1440,31 @@ overlay.addEventListener('mousedown', (e)=>{
     deselectAll();
     e.preventDefault();
   }
+  
+  // For empty overlay clicks without shift, let the first handler prevent caret
+  // and let the document click handler close popover
+});
+
+/* ===== Right-click context menu ===== */
+overlay.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  
+  const chip = chipFromEventTarget(e.target);
+  showContextMenu(e.clientX, e.clientY, chip);
+});
+
+// Hide context menu when clicking elsewhere
+document.addEventListener('click', (e) => {
+  if (contextMenu && !contextMenu.contains(e.target)) {
+    hideContextMenu();
+  }
+});
+
+// Hide context menu on escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && contextMenu && contextMenu.style.display !== 'none') {
+    hideContextMenu();
+  }
 });
 
 window.addEventListener('mousemove', (e)=>{
@@ -967,7 +1509,10 @@ window.addEventListener('mouseup', ()=>{
 /* Click on chips: normal or additive select, open popover */
 overlay.addEventListener('click', (e)=>{
   const ch = chipFromEventTarget(e.target);
-  if(!ch) return;
+  if(!ch) {
+    // Click on empty overlay space - let document click handler close popover
+    return;
+  }
   const additive = e.shiftKey || e.metaKey || e.ctrlKey;
   selectChip(ch, additive ? {toggle:true} : {});
   openPopover(ch);
@@ -1135,7 +1680,7 @@ function closePopover(){
 
   function closePopover(){ if(popEl){ popEl.remove(); popEl=null; } if(currentSelectedChip) currentSelectedChip.classList.remove('capture'); editCapture=false; }
 
-  function removeChip(chip){ if(!chip) return; const prev = chip.previousSibling, next = chip.nextSibling; if(prev && prev.classList && prev.classList.contains('sep')) prev.remove(); else if(next && next.classList && next.classList.contains('sep')) next.remove(); chip.remove(); if(currentSelectedChip===chip) currentSelectedChip=null; rebuildBuffer(); bus.emit('chip:remove', chip); }
+  function removeChip(chip){ if(!chip) return; const prev = chip.previousSibling, next = chip.nextSibling; if(prev && prev.classList && prev.classList.contains('sep')) prev.remove(); else if(next && next.classList && next.classList.contains('sep')) next.remove(); chip.remove(); if(currentSelectedChip===chip) currentSelectedChip=null; rebuildBuffer(); bus.emit('chip:remove', chip); pushHistory('Remove chip'); }
 
   function startControllerCapture(chip){ editCapture=true; selectChip(chip); chip.classList.add('capture'); setStatus('Capture: tilt D‑pad/stick for direction (buffered), press a button to set; UP also prefixes j.'); }
 
@@ -1160,7 +1705,10 @@ function closePopover(){
     png:{ copyPNG, exportPNG },
     settings:{ applyCssKnobs },
     on:(evt,fn)=>bus.on(evt,fn),
-    setStatus
+    setStatus,
+    undo, redo,
+    get suppressHistory(){ return suppressHistory; },
+    set suppressHistory(v){ suppressHistory = !!v; }
   };
   window.ComboOverlay = API;
 
@@ -1212,6 +1760,20 @@ window.addEventListener('keydown',(e)=>{
   }
   if(k==='c') clearOverlay();
 
+  // Undo/Redo shortcuts
+  if(k==='z' && (e.metaKey || e.ctrlKey)){
+    e.preventDefault();
+    if(e.shiftKey){
+      redo(); // Ctrl/Cmd+Shift+Z
+    } else {
+      undo(); // Ctrl/Cmd+Z
+    }
+  }
+  if(k==='y' && (e.metaKey || e.ctrlKey)){
+    e.preventDefault();
+    redo(); // Ctrl/Cmd+Y
+  }
+
   // single-selection delete fallback
   if((k==='delete'||k==='backspace') && window.ComboOverlay?.selectedChip){
     removeChip(window.ComboOverlay.selectedChip);
@@ -1230,4 +1792,7 @@ window.addEventListener('keydown',(e)=>{
   /* ===== Init ===== */
   refreshProfileUI();
   applyCssKnobs();
+  
+  // Create initial history snapshot
+  pushHistory('Initial state');
 })();
