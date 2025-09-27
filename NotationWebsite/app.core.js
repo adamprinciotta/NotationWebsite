@@ -1,4 +1,4 @@
-﻿/* Combo Overlay – Core (v13.7)
+﻿/* Combo Overlay Core (v13.7)
    Responsibilities:
    - UI wiring (profiles, colors, PNG export, OBS URL)
    - Overlay chip add/remove/edit + popover
@@ -10,7 +10,7 @@
            'status' (msg), 'overlay:clear'
 */
 (function(){
-  console.log('App core script loaded - console.log is working'); // Test console
+  // console.log('App core script loaded - console.log is working'); // Test console
   const $ = (s)=>document.querySelector(s);
   const overlay = $('#overlay');
   // Ensure the overlay can't host a caret or gain focus when it's empty
@@ -183,7 +183,7 @@
   const DEFAULT_BUTTON_LABELS=['L','M','H','S','LB','RB','LT','RT','Select','Start','L3','R3','D↑','D↓','D←','D→'];
   const DEFAULT_BUTTON_COLORS=Array(16).fill('#000000');
   const DEFAULT_BUTTON_BG=Array(16).fill('#f5f5f5');
-  function defaultProfile(){return {name:'Default',buttonLabels:[...DEFAULT_BUTTON_LABELS],buttonColors:[...DEFAULT_BUTTON_COLORS],buttonBgColors:[...DEFAULT_BUTTON_BG],deadzone:0.5,chordWindow:80,repeatLockout:110,holdMs:250,motionWindow:700,motionCoupleMs:130,chargeFrames:30,chargeWindow:180,mashWindowMs:350,facing:'right',resetAction:'none',separator:'>',notationMode:'images'}};
+  function defaultProfile(){return {name:'Default',buttonLabels:[...DEFAULT_BUTTON_LABELS],buttonColors:[...DEFAULT_BUTTON_COLORS],buttonBgColors:[...DEFAULT_BUTTON_BG],deadzone:0.5,chordWindow:130,repeatLockout:110,holdMs:250,motionWindow:700,motionCoupleMs:130,chargeFrames:30,chargeWindow:180,mashWindowMs:350,facing:'right',resetAction:'none',separator:'>',notationMode:'images',motionInputsEnabled:true}};
   function loadProfiles(){try{const raw=localStorage.getItem(LS_PROFILES); if(!raw) return [defaultProfile()]; const arr=JSON.parse(raw); return Array.isArray(arr)&&arr.length?arr:[defaultProfile()];}catch{return [defaultProfile()];}}
   function saveProfiles(){localStorage.setItem(LS_PROFILES, JSON.stringify(profiles));}
   function loadActive(){const v=parseInt(localStorage.getItem(LS_ACTIVE)||'0',10);return Number.isFinite(v)&&v>=0&&v<profiles.length? v:0;}
@@ -1207,17 +1207,22 @@ function renderResetLabel(){
     if(facingSel) facingSel.value=p.facing||'right';
     if (overlayFullChk) overlayFullChk.checked = !!p.overlayFullWidth; // ensure UI reflects profile
 
-    setInputValue('#deadzone',       p.deadzone);
-    setInputValue('#chordWindow',    p.chordWindow);
-    setInputValue('#repeatLockout',  p.repeatLockout);
-    setInputValue('#holdMs',         p.holdMs);
-    setInputValue('#motionWindow',   p.motionWindow);
-    setInputValue('#motionCoupleMs', p.motionCoupleMs);
-    setInputValue('#chargeFrames',   p.chargeFrames);
-    setInputValue('#chargeWindow',   p.chargeWindow);
-    setInputValue('#mashWindowMs',   p.mashWindowMs ?? 350);
-    setInputValue('#indicatorMs', p.indicatorMs ?? 1000);
-    
+    // Set motion inputs enabled checkbox
+    const motionInputsChk = document.querySelector('#motionInputsEnabled');
+    if (motionInputsChk) motionInputsChk.checked = p.motionInputsEnabled !== false;
+
+    // Add null checks for all profile values to prevent 'undefined' errors
+    setInputValue('#deadzone',       p.deadzone || 0.5);
+    setInputValue('#chordWindow',    p.chordWindow || 130);
+    setInputValue('#repeatLockout',  p.repeatLockout || 110);
+    setInputValue('#holdMs',         p.holdMs || 250);
+    setInputValue('#motionWindow',   p.motionWindow || 700);
+    setInputValue('#motionCoupleMs', p.motionCoupleMs || 130);
+    setInputValue('#chargeFrames',   p.chargeFrames || 30);
+    setInputValue('#chargeWindow',   p.chargeWindow || 180);
+    setInputValue('#mashWindowMs',   p.mashWindowMs || 350);
+    if(separatorInp) separatorInp.value=p.separator||'>';
+
     // Set notation mode radio buttons
     const notationRadios = document.querySelectorAll('input[name="notationMode"]');
     notationRadios.forEach(radio => {
@@ -1238,7 +1243,7 @@ function renderResetLabel(){
   newProfileBtn?.addEventListener('click',()=>{profiles.push(defaultProfile());activeProfile=profiles.length-1;saveProfiles();saveActive();refreshProfileUI();});
   dupProfileBtn?.addEventListener('click',()=>{const copy=JSON.parse(JSON.stringify(profiles[activeProfile])); copy.name=(copy.name||'Profile')+' (copy)'; profiles.push(copy); activeProfile=profiles.length-1; saveProfiles(); saveActive(); refreshProfileUI();});
   delProfileBtn?.addEventListener('click',()=>{ if(profiles.length<=1) return; profiles.splice(activeProfile,1); activeProfile=0; saveProfiles(); saveActive(); refreshProfileUI();});
-  saveProfileBtn?.addEventListener('click',()=>{ const p=profiles[activeProfile]; p.name=profileName.value.trim()||`Profile ${activeProfile+1}`; p.facing=facingSel.value; p.resetAction=resetSel.value; p.separator=separatorInp.value||'>'; p.deadzone=parseFloat($('#deadzone').value)||p.deadzone; p.chordWindow=parseInt($('#chordWindow').value)||p.chordWindow; p.repeatLockout=parseInt($('#repeatLockout').value)||p.repeatLockout; p.holdMs=parseInt($('#holdMs').value)||p.holdMs; p.motionWindow=parseInt($('#motionWindow').value)||p.motionWindow; p.motionCoupleMs=parseInt($('#motionCoupleMs').value)||p.motionCoupleMs; p.chargeFrames=parseInt($('#chargeFrames').value)||p.chargeFrames; p.chargeWindow=parseInt($('#chargeWindow').value)||p.chargeWindow; p.mashWindowMs=parseInt($('#mashWindowMs').value)||p.mashWindowMs; p.notationMode = document.querySelector('input[name="notationMode"]:checked')?.value || 'images'; saveProfiles(); refreshProfileUI();});
+  saveProfileBtn?.addEventListener('click',()=>{ const p=profiles[activeProfile]; p.name=profileName.value.trim()||`Profile ${activeProfile+1}`; p.facing=facingSel.value; p.resetAction=resetSel.value; p.separator=separatorInp.value||'>'; p.deadzone=parseFloat($('#deadzone').value)||p.deadzone; p.chordWindow=parseInt($('#chordWindow').value)||130; p.repeatLockout=parseInt($('#repeatLockout').value)||p.repeatLockout; p.holdMs=parseInt($('#holdMs').value)||p.holdMs; p.motionWindow=parseInt($('#motionWindow').value)||p.motionWindow; p.motionCoupleMs=parseInt($('#motionCoupleMs').value)||p.motionCoupleMs; p.chargeFrames=parseInt($('#chargeFrames').value)||p.chargeFrames; p.chargeWindow=parseInt($('#chargeWindow').value)||p.chargeWindow; p.mashWindowMs=parseInt($('#mashWindowMs').value)||p.mashWindowMs; p.notationMode = document.querySelector('input[name="notationMode"]:checked')?.value || 'images'; p.motionInputsEnabled = document.querySelector('#motionInputsEnabled')?.checked !== false; saveProfiles(); refreshProfileUI();});
 
   exportBtn?.addEventListener('click',()=>{
     const exportData = {
@@ -1524,6 +1529,7 @@ document.addEventListener('input',(e)=>{
     closePopover(); 
     currentSelectedChip=null; 
     editCapture=false; 
+    chordManager.reset(); // Reset pending chords on clear
     bus.emit('overlay:clear');
     
     // Push discrete operation to history
@@ -1596,10 +1602,83 @@ document.addEventListener('input',(e)=>{
   function poll(){const gps=navigator.getGamepads?.(); let gp=(gamepadIndex!=null)?gps[gamepadIndex]:null; if(!gp){for(const g of gps){if(g){gp=g;gamepadIndex=g.index;prevButtons=g.buttons.map(b=>b.pressed);break;}}}
     if(gp){handleButtons(gp);trackDirections(gp);} requestAnimationFrame(poll);} requestAnimationFrame(poll);
 
+  /* ===== Deterministic Chord Manager ===== */
+  // Batches button presses within a rolling window (from the last press).
+  // On finalize: creates a single chord chip (2+) or a single regular chip (1).
+  const chordManager = (function(){
+    let pending = [];  // [{ i: buttonIndex, t: timestamp }]
+    let timer = null;
+
+    function windowMs(){
+      const p = profiles[activeProfile] || {};
+      // Clamp for sanity; you can tune defaults as you like.
+      const v = Number(p.chordWindow ?? 120);
+      return Math.max(40, Math.min(600, isNaN(v) ? 120 : v));
+    }
+
+    function reset(){
+      pending.length = 0;
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+
+    // Called for every qualifying button press
+    function add(i, t){
+      // Reset any existing hold timer for this button to prevent double-tap hold issues
+      const holdTimerId = holdTimers.get(i);
+      if (holdTimerId) {
+        console.log(`Clearing hold timer for button ${i} to prevent double-tap hold issue`);
+        clearTimeout(holdTimerId);
+        holdTimers.delete(i);
+      }
+      
+      // Remove from active button chips to prevent held state interference
+      if (activeButtonChips.has(i)) {
+        console.log(`Removing button ${i} from activeButtonChips to prevent held state`);
+        activeButtonChips.delete(i);
+      }
+      
+      // De-duplicate same button within the same pending group; keep earliest press
+      if (!pending.some(p => p.i === i)) {
+        pending.push({ i, t });
+        // Maintain chronological order for a stable "L + M" ordering
+        pending.sort((a,b) => a.t - b.t);
+      }
+
+      // Re-arm finalize from NOW (window from the last press)
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(finalize, windowMs());
+    }
+
+    function finalize(){
+      timer = null;
+      if (!pending.length) return;
+      const group = pending.slice(); // copy
+      reset();
+
+      if (group.length >= 2){
+        // Build chord chip in the actual order pressed
+        const html = group.map(x => buttonHTML(x.i)).join(' + ');
+        const chip = addChipElHTML(html, '#f5f5f5');
+        // Let mash collapse evaluate the final rendered chip (optional, safe no-op if absent)
+        try { if (typeof mash !== 'undefined' && mash?.enabled && mash?.onNewChip) mash.onNewChip(html, chip); } catch {}
+        rebuildBuffer();
+        bus.emit('chip:add', chip);
+      } else {
+        // Single press → normal creation with motion detection allowed
+        const i = group[0].i;
+        createIndividualChip(i, now(), /*skipMotion=*/false);
+      }
+    }
+
+    return { add, reset, finalize };
+  })();
+
   /* ===== Directions & motions ===== */
   function tokenFromAxes(ax,ay,dz=0.5){let h=null,v=null;if(Math.abs(ax)>=dz)h=ax<0?'l':'r';if(Math.abs(ay)>=dz)v=ay<0?'u':'d';if(h&&v)return v+h;return h||v||'n';}
-  function dirToImg(tok){const map={u:'u',d:'d',l:'b',r:'f',ul:'ub',ur:'uf',dl:'db',dr:'df'};if(!map[tok])return null;return `<img class=\"img\" src=\"images/${map[tok]}.png\" alt=\"${map[tok]}\">`;}
+  function dirToImg(tok){const map={u:'u',d:'d',l:'b',r:'f',ul:'ub',ur:'uf',dl:'db',dr:'df'};if(!map[tok])return null;return `<img class="img" src="images/${map[tok]}.png" alt="${map[tok]}">`;}
   let dirHistory=[]; let lastTok='n'; let lastUpPrefixAt=0;
+  // Double tap dash detection variables
+  let lastDashTime = 0; let lastDashDirection = '';
   let editCapture=false; // controller capture mode
   let captureDirTok='n'; // buffered dir while capturing
 
@@ -1618,8 +1697,30 @@ function trackDirections(gp){
     dirHistory.push({t,token:tok});
     const win=Math.max(700, p.motionWindow||700)+200;
     while(dirHistory.length && (t-dirHistory[0].t) > win) dirHistory.shift();
+    
+    // Debug logging for directional inputs
+    // console.log(`Direction input: ${tok} at ${t.toFixed(0)}ms`);
   }
   updateCharge(tok);
+
+  // Double tap dash detection - check for forward forward in short window
+  if (tok === 'r' || tok === 'f') {
+    const dashWindow = 200; // 200ms window for double tap
+    if (lastDashDirection === 'r' && (t - lastDashTime) <= dashWindow && lastTok !== 'r' && lastTok !== 'f') {
+      // Double forward detected - create dash chip (only if previous state wasn't forward)
+      const dashChip = addChipElHTML('Dash', '#f5f5f5');
+      lastDashTime = 0; // Reset to prevent multiple detections
+      lastDashDirection = '';
+    } else if (lastTok !== 'r' && lastTok !== 'f') {
+      // Only update timing if we're coming from a non-forward state (detect the first press)
+      lastDashTime = t;
+      lastDashDirection = 'r';
+    }
+  } else if (tok === 'l' || tok === 'b') {
+    // Reset dash detection if moving in opposite direction
+    lastDashTime = 0;
+    lastDashDirection = '';
+  }
 
   // Quick edits outside capture:
   if(!editCapture){
@@ -1645,9 +1746,19 @@ function trackDirections(gp){
   function matchPattern(seq, pattern){ let i=0; for(const p of pattern){ i=seq.indexOf(p,i); if(i===-1) return false; i++; } return true; }
   function detectMotionForButton(){ const p=profiles[activeProfile]; const seq=compressedSeqWithin(p.motionWindow||700);
     
+    // Debug logging to see when this function is called and what sequence it processes
+    console.log(`detectMotionForButton called with sequence: ${JSON.stringify(seq)}`);
+    
+    // Check if motion inputs are enabled
+    if (p.motionInputsEnabled === false) {
+      console.log('Motion inputs disabled - returning null');
+      return null;
+    }
+    
     // Check for 360 first (highest priority - must have all four cardinal directions in any order)
     const set=new Set(seq); 
     if(['u','d','l','r'].every(k=>set.has(k))) {
+      console.log('360 motion detected');
       return `<img class="img" src="images/360.png" alt="360">`;
     }
     
@@ -1661,9 +1772,41 @@ function trackDirections(gp){
       return `<img class="img" src="images/qcb.png" alt="qcb"> <img class="img" src="images/qcb.png" alt="qcb">`;
     }
     
-    // Check regular motion inputs last
-    const tests=[ ['qcf',['d','dr','r']], ['qcb',['d','dl','l']], ['dpf',['r','d','dr']], ['dpb',['l','d','dl']], ['hcf',['l','d','r']], ['hcb',['r','d','l']] ];
-    for(const [key,pat] of tests){ if(matchPattern(seq,pat)) return `<img class="img" src="images/${key}.png" alt="${key}">`; }
+    // Check regular motion inputs last - prioritize half-circles over quarter-circles
+    const tests=[ ['hcf',['l','d','r']], ['hcb',['r','d','l']], ['qcf',['d','dr','r']], ['qcb',['d','dl','l']], ['dpf',['r','d','dr']], ['dpb',['l','d','dl']] ];
+    for(const [key,pat] of tests){ 
+      if (key === 'hcf' || key === 'hcb') {
+        // For half-circle motions, check for proper order: start -> down variation -> end
+        const startDir = key === 'hcf' ? 'l' : 'r';
+        const endDir = key === 'hcf' ? 'r' : 'l';
+        const downVariations = ['d', 'dl', 'dr'];
+        
+        // Find indices of important directions
+        const startIndex = seq.indexOf(startDir);
+        const endIndex = seq.lastIndexOf(endDir);
+        
+        // Check if we have a valid start -> end order with down variation in between
+        const hasValidOrder = startIndex !== -1 && endIndex !== -1 && startIndex < endIndex;
+        const hasDownInBetween = hasValidOrder && 
+          seq.slice(startIndex, endIndex + 1).some(dir => downVariations.includes(dir));
+        
+        // Debug logging for half-circle detection
+        // console.log(`HALF-CIRCLE CHECK (${key}):`);
+        // console.log(`  Input sequence: ${JSON.stringify(seq)}`);
+        // console.log(`  Start dir (${startDir}) index: ${startIndex}`);
+        // console.log(`  End dir (${endDir}) index: ${endIndex}`);
+        // console.log(`  Valid order: ${hasValidOrder}`);
+        // console.log(`  Down in between: ${hasDownInBetween}`);
+        // console.log(`  Would trigger: ${hasValidOrder && hasDownInBetween}`);
+        
+        if (hasValidOrder && hasDownInBetween) {
+          console.log(`HALF-CIRCLE DETECTED: ${key}`);
+          return `<img class="img" src="images/${key}.png" alt="${key}">`;
+        }
+      } else if(matchPattern(seq,pat)) {
+        return `<img class="img" src="images/${key}.png" alt="${key}">`;
+      }
+    }
     
     return null; }
   function snapshotDirection(){ const last=dirHistory.length?dirHistory[dirHistory.length-1].token:'n'; return last==='n'?null:last; }
@@ -1674,6 +1817,11 @@ function trackDirections(gp){
   function isOpposite(a,b){ if(a?.includes('l') && b?.includes('r')) return true; if(a?.includes('r') && b?.includes('l')) return true; if(a?.includes('u') && b?.includes('d')) return true; if(a?.includes('d') && b?.includes('u')) return true; return false; }
 
   /* ===== Buttons & holds ===== */
+  let chordAccumulator = []; // Track buttons pressed within chord window across frames
+  let chordAccumulatorTimeout = null;
+  let chordPressTimes = new Map(); // Track when each button was last pressed for chord detection
+  // let lastButtonTime = new Map(); // Track when each button was last pressed - ALREADY DECLARED ABOVE
+
 function handleButtons(gp){
   const p=profiles[activeProfile];
   if(!prevButtons.length) prevButtons=gp.buttons.map(b=>b.pressed);
@@ -1685,7 +1833,7 @@ function handleButtons(gp){
 
     if(pressed && !was){
 
-      // ===== Guided PRESET binding (ignore D-pad 12–15) =====
+      // ===== Guided PRESET binding (ignore极速版 D-pad 12–15) =====
       if(presetBind.active){
         if(i>=12 && i<=15){
           // Ignore directional presses for binding—keep waiting
@@ -1695,7 +1843,7 @@ function handleButtons(gp){
         
         const label = presetBind.queue[presetBind.i];
         if(typeof label === 'string'){
-          p.buttonLabels[i] = label;
+          p.buttonLabels极速版[i] = label;
           saveProfiles();
           refreshProfileUI();
         }
@@ -1722,18 +1870,26 @@ function handleButtons(gp){
       const last=lastButtonTime.get(i)||0;
 
       if(t-last >= (p.repeatLockout||110)){
+        
+        // Log time since last press for debugging - use chordPressTimes for accurate timing
+        const lastChordTime = chordPressTimes.get(i) || 0;
+        const timeSinceLastPress = t - lastChordTime;
+        console.log(`Button ${i} pressed - time since last press: ${timeSinceLastPress.toFixed(1)}ms`);
+        
+        // Update chord timing tracker
+        chordPressTimes.set(i, t);
 
         // Controller-bound reset (clears + broadcasts)
         if((p.resetAction||'none')===`button:${i}`){
           if (branchModeActive && comboGraph.activeId) {
             // If in branch mode and in a node/branch, restore the node's saved state instead of clearing
-            const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.activeId);
+            const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.active极速版Id);
             if (activeNode) {
               restoreNodeChips(activeNode);
               pushHistory('Reset to node state');
             }
           } else {
-            // Standard behavior when not in branch mode or no active node
+            // Standard behavior when not in branch mode or no active node极速版
             clearOverlay();
           }
           bus.emit('reset:action');
@@ -1759,8 +1915,8 @@ function handleButtons(gp){
         }
 
         // Quick "j." prefix via D-pad UP button index (12) when editing
-        if(currentSelectedChip && i===12 && !editCapture){
-          addJPrefix(currentSelectedChip);
+        if(currentSelectedChip && i===极速版12 && !editCapture){
+          addJPrefix(currentSelectedChip);极速版
           lastButtonTime.set(i,t);
           prevButtons[i]=pressed;
           continue;
@@ -1775,61 +1931,27 @@ function handleButtons(gp){
     prevButtons[i]=pressed;
   }
 
-  // ===== Handle new presses =====
-  for(const i of justPressed){
+  // ===== Handle new presses (via Chord Manager) =====
+  for (const i of justPressed){
     // Ignore D-pad as "buttons" for chip adds (12–15)
-    if(i>=12 && i<=15) continue;
-    if(editCapture && currentSelectedChip) continue;
+    if (i >= 12 && i <= 15) continue;
 
-    // Build the chip HTML (charge -> motion -> dir + button -> button)
-    let html=null;
-    const age = t-(lastCharged.at||0);
-    const nowDir = snapshotDirection()||'';
-    if(lastCharged.tok && age <= (p.chargeWindow||180) && isOpposite(lastCharged.tok, nowDir)){
-      const first = dirToImg(lastCharged.tok)||lastCharged.tok.toUpperCase();
-      const second= dirToImg(nowDir)||nowDir.toUpperCase();
-      html = `${first} ${second} ${buttonHTML(i)}`;
-      lastCharged.tok=null;
+    // If edit-capture is active, we already replaced the selected chip earlier
+    if (editCapture && currentSelectedChip) continue;
+
+    // If insertion capture mode is active, that path already consumed the press
+    if (insertMode && insertMode.startsWith('controller') && i < 12) continue;
+
+    // Clear any existing hold state for this button before handing to chord manager
+    const holdTimerId = holdTimers.get(i);
+    if (holdTimerId) {
+      clearTimeout(holdTimerId);
+      holdTimers.delete(i);
     }
-    if(!html){
-      const motionHTML = detectMotionForButton();
-      if(motionHTML){ html = `${motionHTML} ${buttonHTML(i)}`; }
-    }
-    if(!html){
-      const dirTok = snapshotDirection();
-      if(dirTok){
-        const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase();
-        html = `${dirHTML} + ${buttonHTML(i)}`;
-      }else{
-        html = buttonHTML(i);
-      }
-    }
+    activeButtonChips.delete(i);
 
-    // Add the chip to the overlay
-    const chip = addChipElHTML(html, (profiles[activeProfile].buttonBgColors[i]||'#f5f5f5'));
-
-    // ===== Mash collapse pass =====
-    const mashResult = updateMashAfterAdd(html, chip);
-    if(mashResult === 'removed' || mashResult === 'collapsed'){
-      continue;
-    }
-
-    // Hold tracking
-    activeButtonChips.set(i,{
-      chip,
-      label:(profiles[activeProfile].buttonLabels[i]||`#${i}`),
-      pressAt:t,
-      held:false
-    });
-
-    const holdId=setTimeout(()=>{
-      const obj=activeButtonChips.get(i);
-      if(!obj) return;
-      obj.held=true;
-      mutateLabelText(obj.chip, obj.label, `[${obj.label}]`);
-      rebuildBuffer();
-    }, p.holdMs||250);
-    holdTimers.set(i,holdId);
+    // Hand the press to the deterministic chord manager
+    chordManager.add(i, t);
   }
 
   // ===== Handle releases =====
@@ -2990,12 +3112,12 @@ window.addEventListener('keydown',(e)=>{
       console.log('Share URL created:', shareUrl); // Debug log
       
       // Copy to clipboard
-      navigator.clipboard.write极速版(shareUrl).then(() => {
+      navigator.clipboard.write(shareUrl).then(() => {
         console.log('URL copied to clipboard successfully'); // Debug log
         setStatus('Share URL copied to clipboard!');
         
         // Add visual feedback
-        if (shareBtn极速版) {
+        if (shareBtn) {
           shareBtn.textContent = '✓ Copied!';
           setTimeout(() => {
             shareBtn.textContent = 'Share';
@@ -3021,7 +3143,7 @@ window.addEventListener('keydown',(e)=>{
       console.log('URL updated in browser history'); // Debug log
       
     } catch (error) {
-      console.error('Error in shareProject:', error); // Debug log极速版
+      console.error('Error in shareProject:', error); // Debug log
       setStatus('Error creating share URL: ' + error.message);
     }
   }
@@ -3100,7 +3222,7 @@ window.addEventListener('keydown',(e)=>{
           refreshProfileUI();
           updateNodeSelector();
           
-          // Restore active node极速版 if it exists
+          // Restore active node if it exists
           if(comboGraph.activeId){
             const activeNode = comboGraph.nodes.find(n => n.id === comboGraph.activeId);
             if(activeNode){
@@ -3590,5 +3712,80 @@ window.addEventListener('keydown',(e)=>{
         chip.dataset.originalHtml = data.originalHtml; // Keep original reference
       }
     });
+  }
+
+  // Real-time update for chord window when input field changes
+  const chordWindowInput = document.querySelector('#chordWindow');
+  if (chordWindowInput) {
+    chordWindowInput.addEventListener('input', function(e) {
+      const newValue = parseInt(e.target.value);
+      if (!isNaN(newValue) && newValue > 0) {
+        profiles[activeProfile].chordWindow = newValue;
+        console.log(`Chord window updated to: ${newValue}ms`);
+      }
+    });
+  }
+
+  function createIndividualChip(i, t, skipMotionDetection = false) {
+    const p=profiles[activeProfile];
+    // Build the chip HTML (charge -> motion -> dir + button -> button)
+    let html=null;
+    const age = t-(lastCharged.at||0);
+    const nowDir = snapshotDirection()||'';
+    if(lastCharged.tok && age <= (p.chargeWindow||180) && isOpposite(lastCharged.tok, nowDir)){
+      const first = dirToImg(lastCharged.tok)||lastCharged.tok.toUpperCase();
+      const second= dirToImg(nowDir)||nowDir.toUpperCase();
+      html = `${first} ${second} ${buttonHTML(i)}`;
+      lastCharged.tok=null;
+    }
+    if(!html && !skipMotionDetection){
+      const motionHTML = detectMotionForButton();
+      if(motionHTML){ 
+        html = `${motionHTML} ${buttonHTML(i)}`; 
+      }
+    }
+    if(!html){
+      const dirTok = snapshotDirection();
+      if(dirTok){
+        const dirHTML=dirToImg(dirTok)||dirTok.toUpperCase();
+        html = `${dirHTML} + ${buttonHTML(i)}`;
+      }else{
+        html = buttonHTML(i);
+      }
+    }
+
+    // Add the chip to the overlay
+    const chip = addChipElHTML(html, (profiles[activeProfile].buttonBgColors[i]||'#f5f5f5'));
+    // console.log(`Created chip: ${html}`);
+
+    // ===== Mash collapse pass =====
+    const mashResult = updateMashAfterAdd(html, chip);
+    if(mashResult === 'removed' || mashResult === 'collapsed'){
+      return;
+    }
+
+    // Hold tracking
+    activeButtonChips.set(i,{
+      chip,
+      label:(profiles[activeProfile].buttonLabels[i]||`#${i}`),
+      pressAt:t,
+      held:false
+    });
+
+    // Hold tracking - only set up hold detection if the button is still pressed
+    const holdId=setTimeout(()=>{
+      const obj=activeButtonChips.get(i);
+      if(!obj) return;
+      
+      // Check if the button is still pressed before marking as held
+      const gp=navigator.getGamepads?.();
+      const currentGamepad=(gamepadIndex!=null)?gp[gamepadIndex]:null;
+      if(currentGamepad && currentGamepad.buttons[i]?.pressed){
+        obj.held=true;
+        mutateLabelText(obj.chip, obj.label, `[${obj.label}]`);
+        rebuildBuffer();
+      }
+    }, p.holdMs||250);
+    holdTimers.set(i,holdId);
   }
 })();
