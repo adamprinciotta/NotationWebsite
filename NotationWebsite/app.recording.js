@@ -118,16 +118,18 @@
   // window.addEventListener('resize', ()=>{ if(lastSteps) buildTicks(lastSteps); });
 
   // ===== Recording hooks =====
-  CO.on('chip:add', (chipEl)=>{
+  CO.on('chip:add', (chipEl)=>{  
     if(mode!=='record') return;
     const t=performance.now()-t0; // relative
-    const chipsHTML=[...CO.overlay.querySelectorAll('.chip')].map(ch=>ch.innerHTML);
-    script.push({t, chipsHTML});
+    
+    // Only record the NEW chip that was added, not the entire overlay
+    const newChipHTML = chipEl.innerHTML;
+    script.push({t, chipsHTML: [newChipHTML]});
     
     // Store time marker for this step
     markers.push({stepIndex: script.length - 1, tMs: t});
     
-    CO.setStatus(`Recorded step ${script.length} @ ${Math.round(t)}ms`);
+    CO.setStatus('Recorded: '+ (chipEl.textContent || 'chip'));
   });
   CO.on('overlay:clear', ()=>{
     if(mode==='record'){
@@ -144,6 +146,8 @@
   // Expose minimal API
   CO.rec = {
     get mode(){ return mode; }, // 'idle' | 'record' | 'play'
+    get script(){ return script; }, // Expose recorded script data
+    get markers(){ return markers; }, // Expose time markers
     startRecord, play, stop
   };
 
