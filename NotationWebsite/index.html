@@ -208,9 +208,24 @@
     </div>
   </div>
 
-    <script src="app.core.js"></script>
-    <script src="app.recording.js"></script>
-    <script src="app.eddie.js"></script>
-    <script src="app.eddie.ui.js"></script>
+  <!-- ===== IMPORT PANEL ===== -->
+  <div class="import-panel" style="margin-top: 20px; padding: 20px; background: #f5f5f5; border-radius: 8px;">
+    <h3>Import Combo JSON</h3>
+    <div style="margin-bottom: 10px;">
+      <input id="importFile" type="file" accept="application/json" style="margin-right: 10px;" />
+      <button id="btnImportFile" class="btn">Import File</button>
+    </div>
+
+    <textarea id="importText" rows="8" placeholder="Paste combo JSON here" style="width: 100%; margin-bottom: 10px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"></textarea>
+    <button id="btnImportText" class="btn">Import Text</button>
+
+    <div id="importErrors" class="mt-2" style="margin-top: 10px;"></div>
+  </div>
+
+  <script src="app.core.js"></script>
+  <script src="app.recording.js"></script>
+  <script src="app.eddie.js"></script>
+  <script src="app.eddie.ui.js"></script>
+  <script src="app.import.js"></script>
 </body>
 </html>

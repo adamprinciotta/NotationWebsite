@@ -55,6 +55,8 @@
     rootId: null,
     activeId: null,
   };
+  
+  // comboMetadata is declared later at line 3591
 
   function createComboNode(label, chipsHTML) {
     return {
@@ -1590,12 +1592,48 @@
   });
 
   exportBtn?.addEventListener("click", () => {
+    // Save current overlay state to active node before exporting
+    if (comboGraph.activeId) {
+      const currentChips = [...overlay.querySelectorAll(".chip")];
+      const currentChipsHTML = currentChips.map((chip) => chip.innerHTML);
+      const activeNode = comboGraph.nodes.find(
+        (n) => n.id === comboGraph.activeId
+      );
+      if (activeNode) {
+        activeNode.chipsHTML = currentChipsHTML;
+        console.log("Saved current chips to active node:", activeNode.label, currentChipsHTML);
+      } else {
+        console.log("No active node found for ID:", comboGraph.activeId);
+      }
+    } else if (comboGraph.nodes.length === 0) {
+      // If no nodes exist, create one from current overlay
+      const chips = [...overlay.querySelectorAll(".chip")];
+      if (chips.length > 0) {
+        const label = "Exported Combo " + new Date().toLocaleTimeString();
+        saveCurrentAsNode(label);
+        console.log("Created new node from current overlay:", label);
+      } else {
+        console.log("No chips in overlay, nothing to export");
+        setStatus("No combo to export");
+        return;
+      }
+    } else {
+      console.log("No active node ID, but nodes exist - may need to select a node first");
+    }
+    
+    console.log("Combo graph nodes:", comboGraph.nodes);
+    console.log("Combo graph edges:", comboGraph.edges);
+    console.log("Combo metadata:", comboMetadata);
+    
     const exportData = {
       version: "1.0",
       meta: comboMetadata,
       graph: comboGraph,
       profile: profiles[activeProfile],
     };
+    
+    console.log("Export data:", exportData);
+    
     const blob = new Blob([JSON.stringify(exportData, null, 2)], {
       type: "application/json",
     });
@@ -1631,6 +1669,10 @@
         // New format - metadata + graph + profile
         comboMetadata = data.meta;
         comboGraph = data.graph;
+        
+        console.log("Imported combo graph:", comboGraph);
+        console.log("Active node ID:", comboGraph.activeId);
+        console.log("Nodes count:", comboGraph.nodes.length);
 
         // Replace current profile with imported one
         profiles[activeProfile] = data.profile;
@@ -1644,8 +1686,19 @@
             (n) => n.id === comboGraph.activeId
           );
           if (activeNode) {
+            console.log("Restoring active node:", activeNode.label);
             restoreNodeChips(activeNode);
+          } else {
+            console.log("Active node not found in imported nodes");
           }
+        } else if (comboGraph.nodes.length > 0) {
+          // If no active ID but nodes exist, set first node as active and restore it
+          console.log("No active ID, setting first node as active");
+          comboGraph.activeId = comboGraph.nodes[0].id;
+          restoreNodeChips(comboGraph.nodes[0]);
+          updateNodeSelector();
+        } else {
+          console.log("No nodes to restore");
         }
 
         setStatus("Imported combo data with metadata");
@@ -1972,6 +2025,7 @@
     return c;
   }
 
+  
   function clearOverlay() {
     // Capture chip HTMLs before clearing
     const chips = getChipList();
@@ -1993,6 +2047,34 @@
       chips: chipHTMLs,
     });
   }
+
+  // === Global overlay bridge (must be inside the same closure as addChipElHTML) ===
+  (function () {
+    try {
+      if (!window.ComboOverlay) window.ComboOverlay = {};
+
+      // expose both namespaced and global for widest compatibility
+      window.ComboOverlay.addChipElHTML = function (html, perButtonBg) {
+        return addChipElHTML(html, perButtonBg);
+      };
+      window.addChipElHTML = addChipElHTML;
+
+      if (typeof clearOverlay === "function") {
+        window.ComboOverlay.clearOverlay = function () {
+          try { clearOverlay(); } catch (e) { console.warn("[overlay] clearOverlay failed", e); }
+        };
+      }
+
+      // hard debug
+      console.log("[overlay] bridge ready",
+        "typeof addChipElHTML:", typeof addChipElHTML,
+        "namespaced? ", !!window.ComboOverlay,
+        "fn? ", typeof window.ComboOverlay.addChipElHTML);
+    } catch (e) {
+      console.warn("[overlay] bridge setup failed", e);
+    }
+  })();
+
   $("#clearBtn")?.addEventListener("click", clearOverlay);
   $("#copyBtn")?.addEventListener("click", () => {
     const txt = buffer.join(currentSeparator().trim());
@@ -2512,7 +2594,7 @@
 
           const label = presetBind.queue[presetBind.i];
           if (typeof label === "string") {
-            p.buttonLabels极速版[i] = label;
+            p.buttonLabels[i] = label;
             saveProfiles();
             refreshProfileUI();
           }
@@ -2661,7 +2743,7 @@
           .getPropertyValue("--chip-text")
           .trim()
       : p.buttonColors[btnIndex] || "#000000";
-    return `<span style=\"color:${color}\">${escapeHtml(text)}</span>`;
+    return `<span data-role="btn" style="color:${color}">${escapeHtml(text)}</span>`;
   }
 
   function addJPrefix(chip) {
@@ -4720,4 +4802,6 @@
     }, p.holdMs || 250);
     holdTimers.set(i, holdId);
   }
+  
+  console.log("[overlay] core loaded; typeof addChipElHTML =", typeof addChipElHTML);
 })();

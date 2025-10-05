@@ -74,6 +74,160 @@
   let markers=[];  // [{stepIndex:number, tMs:number}] – time markers for each step
   let rafId=null;
 
+  // === Direction recording state ===
+  const DIR_DEADZONE = 0.35;   // tweak for your pad
+  let lastDirKey = 'n';        // current derived direction ('n','u','d','l','r','uf','df','ub','db')
+  let lastDirAt  = 0;          // timestamp of last direction change (ms)
+
+  function dirKeyFromAxes(x, y) {
+    // NOTE: typical gamepads => x: left(-1)↔right(+1), y: up(-1)↔down(+1)
+    const xr = Math.abs(x) >= DIR_DEADZONE ? (x > 0 ? 'r' : 'l') : '';
+    const yr = Math.abs(y) >= DIR_DEADZONE ? (y > 0 ? 'd' : 'u') : '';
+    if (!xr && !yr) return 'n';
+    if (xr && yr) return (yr + xr)  // 'dr','dl','ur','ul'
+              .replace('ur','uf').replace('ul','ub')  // normalize names to your sprites
+              .replace('dr','df').replace('dl','db');
+    return (yr || xr);
+  }
+
+  // Emit a chip for direction-only changes so exporter can hold/close [dir]
+  function emitDirChip(dirKey) {
+    // Skip neutral if you don't want explicit 5s; comment out next line to include 5
+    if (dirKey === 'n') return;
+
+    const html = `<img class="img" src="images/${dirKey}.png" alt="${dirKey}">`;
+    // Reuse your existing recorder hook that creates a new step with this chip
+    const chipEl = document.createElement('span');
+    chipEl.className = 'chip';
+    chipEl.innerHTML = html;
+    
+    // Trigger the chip:add event to record this direction
+    CO.emit('chip:add', chipEl);
+    console.log('[rec][dir] emitted', dirKey);
+  }
+
+  // Call this from your poll loop each frame while recording
+  function onPollAxes(nowMs, axesX, axesY) {
+    const k = dirKeyFromAxes(axesX, axesY);
+    if (k === lastDirKey) return;
+    lastDirKey = k;
+    lastDirAt = nowMs;
+    emitDirChip(k);
+  }
+
+  // === Advanced Direction Recording ===
+  const RECORD_DIRECTION_CHIPS = true;
+  const AXIS_THRESHOLD = 0.45;
+  const DIRECTION_STABLE_MS = 35;
+  const SJ_WINDOW_MS = 120;
+  const SJ_ACTION_MS = 150;
+
+  let lastEmittedDir = '5';      // last direction actually emitted (numpad digit)
+  let lastEmittedAt = 0;         // timestamp of last emission
+  let lastRawDir = '5';          // current raw direction from axes
+  let lastRawDirAt = 0;          // timestamp when current raw direction started
+  let recentDirs = [];           // buffer for superjump detection: {dir, time}
+
+  // Convert axes to numpad digit (1-9, 5=neutral)
+  function axesToNumpad(x, y, threshold = AXIS_THRESHOLD) {
+    const xr = Math.abs(x) >= threshold ? (x > 0 ? '6' : '4') : '5';
+    const yr = Math.abs(y) >= threshold ? (y > 0 ? '2' : '8') : '5';
+    
+    // Combine for diagonals
+    if (xr !== '5' && yr !== '5') {
+      if (yr === '2') return xr === '6' ? '3' : '1';  // down-right(3), down-left(1)
+      if (yr === '8') return xr === '6' ? '9' : '7';  // up-right(9), up-left(7)
+    }
+    
+    return yr !== '5' ? yr : xr;  // prioritize vertical if both present
+  }
+
+  // Emit direction chip with stability check
+  function maybeEmitDirectionChip(now, dirDigit) {
+    if (!RECORD_DIRECTION_CHIPS) return;
+    
+    // Check if direction has been stable long enough
+    if (dirDigit !== lastRawDir) {
+      lastRawDir = dirDigit;
+      lastRawDirAt = now;
+      return;
+    }
+    
+    const stableTime = now - lastRawDirAt;
+    if (stableTime < DIRECTION_STABLE_MS) return;
+    
+    // Don't emit if same as last emitted
+    if (dirDigit === lastEmittedDir) return;
+    
+    // Skip neutral if desired
+    if (dirDigit === '5') return;
+    
+    // Convert to image format for chip
+    const dirMap = {
+      '1': 'db', '2': 'd', '3': 'df',
+      '4': 'l', '5': 'n', '6': 'r', 
+      '7': 'ub', '8': 'u', '9': 'uf'
+    };
+    
+    const imageKey = dirMap[dirDigit];
+    const html = `<img class="img" src="images/${imageKey}.png" alt="${imageKey}">`;
+    
+    // Record direction chip
+    const chipEl = document.createElement('span');
+    chipEl.className = 'chip';
+    chipEl.innerHTML = html;
+    
+    CO.emit('chip:add', chipEl);
+    console.log('[rec][dir] emitted', dirDigit, 'as', imageKey);
+    
+    // Update state
+    lastEmittedDir = dirDigit;
+    lastEmittedAt = now;
+    
+    // Add to superjump detection buffer
+    recentDirs.push({dir: dirDigit, time: now});
+    if (recentDirs.length > 10) recentDirs.shift();
+  }
+
+  // Detect superjump pattern (2 → 9 or 2 → 7)
+  function detectSuperjump() {
+    if (recentDirs.length < 2) return false;
+    
+    const lastTwo = recentDirs.slice(-2);
+    const [first, second] = lastTwo;
+    
+    // Check for 2 → 9 or 2 → 7 within time window
+    if (first.dir === '2' && (second.dir === '9' || second.dir === '7')) {
+      const timeDiff = second.time - first.time;
+      return timeDiff <= SJ_WINDOW_MS;
+    }
+    
+    return false;
+  }
+
+  // Clear direction state on reset
+  function __resetDirRecorder() {
+    lastEmittedDir = '5';
+    lastEmittedAt = 0;
+    lastRawDir = '5';
+    lastRawDirAt = 0;
+    recentDirs = [];
+  }
+
+  // --- DEBUG HUD ---
+  let dbg = document.getElementById('recDebug');
+  if (!dbg) {
+    dbg = document.createElement('div');
+    dbg.id = 'recDebug';
+    dbg.style.cssText = 'position:fixed;left:10px;bottom:10px;background:#111b;padding:6px 8px;border:1px solid #2a2f3a;border-radius:6px;font:12px system-ui;color:#9aa3b2;z-index:9999';
+    dbg.textContent = 'rec: idle · steps: 0';
+    document.body.appendChild(dbg);
+  }
+  function updateDebug(extra='') {
+    dbg.textContent = `rec: ${mode} · steps: ${script.length} ${extra}`;
+  }
+  window.CO_dumpScript = () => console.log(JSON.stringify(script, null, 2));
+
   // ===== Option B: Global Playline (module scope so stop() can call it) =====
   let playline = null, bar = null, ticksEl = null;
 
@@ -118,28 +272,26 @@
   // window.addEventListener('resize', ()=>{ if(lastSteps) buildTicks(lastSteps); });
 
   // ===== Recording hooks =====
-  CO.on('chip:add', (chipEl)=>{  
-    if(mode!=='record') return;
-    const t=performance.now()-t0; // relative
-    
-    // Only record the NEW chip that was added, not the entire overlay
+  CO.on('chip:add', (chipEl) => {
+    if (mode !== 'record') return;
+    const t = performance.now() - t0;
+
+    // Store only the NEW chip's HTML (not cumulative snapshot)
     const newChipHTML = chipEl.innerHTML;
-    script.push({t, chipsHTML: [newChipHTML]});
     
-    // Store time marker for this step
-    markers.push({stepIndex: script.length - 1, tMs: t});
-    
-    CO.setStatus('Recorded: '+ (chipEl.textContent || 'chip'));
+    script.push({ t, chipsHTML: [newChipHTML], addedIndex: script.length });
+    markers.push({ stepIndex: script.length - 1, tMs: t });
+
+    CO.setStatus('Recorded: ' + (chipEl.textContent || 'chip'));
+    updateDebug(`(+chip, idx=${script.length - 1})`);
   });
-  CO.on('overlay:clear', ()=>{
-    if(mode==='record'){
-      const t=performance.now()-t0;
-      script.push({t, chipsHTML:[]});
-      
-      // Store time marker for clear action
-      markers.push({stepIndex: script.length - 1, tMs: t});
-      
+  CO.on('overlay:clear', () => {
+    if (mode === 'record') {
+      const t = performance.now() - t0;
+      script.push({ t, chipsHTML: [], addedIndex: -1 });
+      markers.push({ stepIndex: script.length - 1, tMs: t });
       CO.setStatus('Recorded: overlay cleared');
+      updateDebug('(clear)');
     }
   });
 
@@ -157,28 +309,65 @@
     else if (mode === 'play'){ stop(); play(); }
   });
 
+  // Hard reset function to clear all recording state
+  function hardResetRecording() {
+    // Stop any current recording timers
+    if (rafId) cancelAnimationFrame(rafId), rafId = null;
+    if (gpPollId) cancelAnimationFrame(gpPollId), gpPollId = null;
+
+    // Clear overlay DOM
+    CO.overlay.innerHTML = '';
+
+    // Clear script and markers
+    script = [];
+    markers = [];
+
+    // Clear exporter runtime state
+    window.heldDir = null;
+    if (window.buttonHolds) window.buttonHolds.clear?.();
+    if (window.activeButtonChips) window.activeButtonChips.clear?.();
+
+    // Clear direction recording state
+    __resetDirRecorder();
+
+    // Reset recording state
+    mode = 'idle';
+    t0 = 0;
+    preventAdds = false;
+    replayArmed = false;
+    updateReplayPill(false);
+
+    // Clear playback decor
+    resetPlaybackDecor();
+    if (OPTION_B_ENABLED) clearPlayline();
+
+    CO.setStatus('Hard reset complete');
+    updateDebug();
+    updateMarkersUI();
+
+    console.log('[RESET] complete');
+  }
+
 // Reset action integration (controller "Reset" mapping)
 // - If playing: hard stop immediately, then restart from the beginning
-// - If recording: stop recording and start playback of what was recorded
+// - If recording: restart recording from the beginning
 // - If idle and sticky replay was armed: start from beginning
 CO.on && CO.on('reset:action', ()=>{
   if (mode === 'record'){
-    stop();
-    if (script.length > 0) {
-      requestAnimationFrame(play);
-    } else {
-      CO.setStatus('Nothing recorded to play.');
-    }
+    // Restart recording from the beginning
+    hardResetRecording();
+    requestAnimationFrame(startRecord);
     return;
   }
   if (mode === 'play'){
     // HARD reset: stop clears all RAFs, grading, tells, bars
-    stop();
+    hardResetRecording();
     requestAnimationFrame(play);
     return;
   }
   if (replayArmed){
     // play from start when armed
+    hardResetRecording();
     requestAnimationFrame(play);
   }
 });
@@ -233,6 +422,12 @@ CO.on && CO.on('reset:action', ()=>{
   function stop(){
     gpPrev = [];
     if(rafId) cancelAnimationFrame(rafId), rafId=null;
+    
+    // Debug logging on stop
+    if (mode === 'record') {
+      console.log('[rec] steps:', script.length, 'finalChips:', (script.at(-1)?.chipsHTML?.length||0));
+    }
+    
     mode='idle';
 
     resetPlaybackDecor();         // clears tells, pulses, cursor
@@ -249,31 +444,48 @@ CO.on && CO.on('reset:action', ()=>{
 
 
   function startRecord(){
-    script=[];
+    script=[]; markers=[];
     t0=performance.now();
     mode='record';
     CO.setStatus('Recording… perform your sequence.');
+    updateDebug();
   }
 
-  // Convert recorded snapshots into per-chip press times and the final chip list.
-  // Assumes your recorder captured a snapshot each time a chip was added.
+  // New buildPresses: supports per-chip events (each step has only the newly added chip)
   function buildPresses(script){
-    if(!Array.isArray(script) || !script.length){
+    if (!Array.isArray(script) || !script.length) {
       return { finalChips: [], presses: [], totalDur: 0 };
     }
-    const finalChips = script[script.length-1].chipsHTML || [];
+
+    // Scan the event stream and collect the chips in order of first appearance.
+    // Keep the first time each chip index appeared (press time).
+    const finalChips = [];
     const presses = [];
 
-    for(let idx=0; idx<finalChips.length; idx++){
-      // first step whose length >= idx+1 is the moment chip #idx first existed
-      const step = script.find(s => (s.chipsHTML?.length || 0) >= idx+1);
-      let t = step ? step.t : 0;
-      // ensure monotonic non-decreasing order
-      if(idx>0 && t < presses[idx-1].t) t = presses[idx-1].t + 1;
-      presses.push({ idx, t });
+    for (let i = 0; i < script.length; i++){
+      const step = script[i];
+      const chips = Array.isArray(step.chipsHTML) ? step.chipsHTML : [];
+      if (chips.length === 0) continue;              // skip clear steps here
+      // We only record NEW chip(s) at this step; push them to final list
+      for (const html of chips){
+        const idx = finalChips.length;
+        finalChips.push(html);
+        presses.push({ idx, t: step.t });            // press time = this step's time
+      }
     }
 
-    const totalDur = script[script.length-1].t || (presses[presses.length-1]?.t || 0);
+    // If nothing recorded, bail
+    if (finalChips.length === 0) {
+      return { finalChips: [], presses: [], totalDur: script[script.length-1]?.t || 0 };
+    }
+
+    // Ensure monotonicity
+    presses.sort((a,b)=>a.idx-b.idx);
+    for (let k=1; k<presses.length; k++){
+      if (presses[k].t < presses[k-1].t) presses[k].t = presses[k-1].t + 1;
+    }
+
+    const totalDur = script[script.length-1]?.t || presses[presses.length-1].t || 0;
     return { finalChips, presses, totalDur };
   }
 
@@ -296,7 +508,12 @@ CO.on && CO.on('reset:action', ()=>{
 
     // Derive presses (one time per chip) + final snapshot
     const { finalChips, presses, totalDur } = buildPresses(script);
-    if(!finalChips.length){ CO.setStatus('Script has no chips.'); mode='idle'; return; }
+    if (!finalChips.length) {
+      CO.setStatus('Script has no chips.');
+      updateDebug('(no chips)');
+      mode = 'idle';
+      return;
+    }
 
     // Render baseline (all chips visible)
     applyFinalSnapshot(finalChips);
@@ -492,6 +709,24 @@ function startGrading(steps, chipEls, state){
 
     if(gp && gp.buttons){
       if(!gpPrev.length) gpPrev = gp.buttons.map(b => !!b.pressed);
+      
+      // === NEW: Advanced Direction recording ===
+      // Get axes values (assuming standard gamepad layout)
+      const axesX = gp.axes?.[0] || 0;  // Left stick X
+      const axesY = gp.axes?.[1] || 0;  // Left stick Y
+      
+      // Call advanced direction recorder
+      if (mode === 'record') {
+        const now = performance.now();
+        const dirDigit = axesToNumpad(axesX, axesY);
+        maybeEmitDirectionChip(now, dirDigit);
+        
+        // Superjump detection (for logging/debug)
+        if (detectSuperjump()) {
+          console.log('[rec][sj] detected superjump pattern');
+        }
+      }
+      
       for(let i=0;i<gp.buttons.length;i++){
         if(i>=12) break; // ignore d-pad indices for grading presses
         const pressed = !!gp.buttons[i].pressed, was = !!gpPrev[i];
@@ -671,4 +906,32 @@ function startGrading(steps, chipEls, state){
 
   // Console breadcrumbs so the user sees activity
   CO.on('status', msg=>console.log('[recording]', msg));
+
+  // Console instrumentation helpers for debugging
+  window.__dumpScript = function(label = 'DUMP') {
+    try {
+      console.log(`[DUMP] ${label}`);
+      if (!script || !script.length) { 
+        console.warn('No script found'); 
+        return; 
+      }
+      console.log('stepCount=', script.length);
+      script.forEach((s, i) => {
+        const len = (s?.chipsHTML || []).length;
+        console.log(`[DUMP] step ${i} len=${len}`, { t: s?.t, chipsHTML: s?.chipsHTML });
+      });
+      console.log('[DUMP] end');
+    } catch (e) { console.error(e); }
+  };
+
+  window.__verifyReset = function() {
+    const ok = {
+      scriptEmpty: !script || script.length === 0,
+      overlayEmpty: !CO.overlay || CO.overlay.children.length === 0,
+      heldDirNull: window.heldDir == null,
+      modeIdle: mode === 'idle',
+    };
+    console.log('[VERIFY RESET]', ok);
+    return ok;
+  };
 })();
